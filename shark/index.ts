@@ -114,13 +114,18 @@ function renderAnsiHalf(art: string[], palette: Record<string, string | null>): 
 function getSharkAscii(theme: Theme): string[] {
 	const muted = (value: string) => theme.fg("muted", value);
 	const dim = (value: string) => theme.fg("dim", value);
-
-	return [
-		...renderAnsiHalf(SHARK_ART, SHARK_PALETTE),
-		muted("   shark theme") + dim(` v${VERSION}`),
-		muted("   pixel predator online") + dim(" • /shark-header-off to restore default header"),
-		"",
+	const artLines = renderAnsiHalf(SHARK_ART, SHARK_PALETTE);
+	const infoLines = [
+		muted("shark theme") + dim(` v${VERSION}`),
+		muted("pixel predator online"),
+		dim("/shark-header-off to restore default header"),
 	];
+	const gap = "   ";
+
+	return artLines.map((line, index) => {
+		const info = infoLines[index] ?? "";
+		return info ? `${line}${gap}${info}` : line;
+	});
 }
 
 export default function sharkExtension(pi: ExtensionAPI) {
