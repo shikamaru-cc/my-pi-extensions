@@ -111,14 +111,15 @@ function renderAnsiHalf(art: string[], palette: Record<string, string | null>): 
 	return lines;
 }
 
-function getSharkAscii(theme: Theme): string[] {
+function getSharkAscii(theme: Theme, modelLabel: string, cwdLabel: string): string[] {
 	const muted = (value: string) => theme.fg("muted", value);
 	const dim = (value: string) => theme.fg("dim", value);
 	const artLines = renderAnsiHalf(SHARK_ART, SHARK_PALETTE);
+	const boldWhite = (value: string) => `\u001b[1;97m${value}\u001b[0m`;
 	const infoLines = [
-		muted("shark theme") + dim(` v${VERSION}`),
-		muted("pixel predator online"),
-		dim("/shark-header-off to restore default header"),
+		boldWhite("shark") + dim(` pi v${VERSION}`),
+		muted("model ") + dim(modelLabel),
+		muted("cwd   ") + dim(cwdLabel),
 	];
 	const gap = "   ";
 
@@ -134,7 +135,8 @@ export default function sharkExtension(pi: ExtensionAPI) {
 
 		ctx.ui.setHeader((_tui, theme) => ({
 			render(_width: number): string[] {
-				return getSharkAscii(theme);
+				const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "-";
+				return getSharkAscii(theme, modelLabel, ctx.cwd);
 			},
 			invalidate() {},
 		}));
@@ -153,7 +155,8 @@ export default function sharkExtension(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			ctx.ui.setHeader((_tui, theme) => ({
 				render(_width: number): string[] {
-					return getSharkAscii(theme);
+					const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "-";
+					return getSharkAscii(theme, modelLabel, ctx.cwd);
 				},
 				invalidate() {},
 			}));
