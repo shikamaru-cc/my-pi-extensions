@@ -1,4 +1,6 @@
-import { VERSION, type ExtensionAPI, type Theme } from "@mariozechner/pi-coding-agent";
+import { VERSION, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
+import { basename } from "node:path";
+import { hostname, platform, release } from "node:os";
 
 const SHARK_PALETTE: Record<string, string | null> = {
 	".": null,
@@ -111,22 +113,62 @@ function renderAnsiHalf(art: string[], palette: Record<string, string | null>): 
 	return lines;
 }
 
-function getSharkAscii(theme: Theme, modelLabel: string, cwdLabel: string): string[] {
-	const muted = (value: string) => theme.fg("muted", value);
-	const dim = (value: string) => theme.fg("dim", value);
+type HeaderInfo = {
+	model: string;
+	cwd: string;
+	workspace: string;
+	session: string;
+	host: string;
+	node: string;
+	time: string;
+	command: string;
+};
+
+function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
+	const white = (value: string) => `\u001b[97m${value}\u001b[0m`;
 	const artLines = renderAnsiHalf(SHARK_ART, SHARK_PALETTE);
-	const boldWhite = (value: string) => `\u001b[1;97m${value}\u001b[0m`;
+	const accent = fgAnsi("#01a3e4");
+	const reset = "\u001b[0m";
+	const shark = (value: string) => `${accent}\u001b[1m${value}${reset}`;
+	const key = (label: string) => `${accent}${label}:${reset} `;
 	const infoLines = [
-		boldWhite("shark") + dim(` pi v${VERSION}`),
-		muted("model ") + dim(modelLabel),
-		muted("cwd   ") + dim(cwdLabel),
+		shark("shark") + white(` pi v${VERSION}`),
+		key("model") + white(info.model),
+		key("cwd") + white(info.cwd),
+		key("workspace") + white(info.workspace),
+		key("session") + white(info.session),
+		key("host") + white(info.host),
+		key("node") + white(info.node),
+		key("time") + white(info.time),
+		key("command") + white(info.command),
 	];
 	const gap = "   ";
 
 	return artLines.map((line, index) => {
-		const info = infoLines[index] ?? "";
-		return info ? `${line}${gap}${info}` : line;
+		const text = infoLines[index] ?? "";
+		return text ? `${line}${gap}${text}` : line;
 	});
+}
+
+function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
+	const now = new Date();
+	const yyyy = now.getFullYear();
+	const mm = String(now.getMonth() + 1).padStart(2, "0");
+	const dd = String(now.getDate()).padStart(2, "0");
+	const hh = String(now.getHours()).padStart(2, "0");
+	const mi = String(now.getMinutes()).padStart(2, "0");
+	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "-";
+
+	return {
+		model,
+		cwd: ctx.cwd,
+		workspace: basename(ctx.cwd) || ctx.cwd,
+		session: ctx.sessionManager.sessionName ?? ctx.sessionManager.sessionId,
+		host: `${hostname()} ${platform()} ${release()}`,
+		node: process.version,
+		time: `${yyyy}-${mm}-${dd} ${hh}:${mi}`,
+		command: "/shark-header-off",
+	};
 }
 
 export default function sharkExtension(pi: ExtensionAPI) {
@@ -135,8 +177,7 @@ export default function sharkExtension(pi: ExtensionAPI) {
 
 		ctx.ui.setHeader((_tui, theme) => ({
 			render(_width: number): string[] {
-				const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "-";
-				return getSharkAscii(theme, modelLabel, ctx.cwd);
+				return getSharkAscii(theme, getHeaderInfo(ctx));
 			},
 			invalidate() {},
 		}));
@@ -155,8 +196,7 @@ export default function sharkExtension(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			ctx.ui.setHeader((_tui, theme) => ({
 				render(_width: number): string[] {
-					const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "-";
-					return getSharkAscii(theme, modelLabel, ctx.cwd);
+					return getSharkAscii(theme, getHeaderInfo(ctx));
 				},
 				invalidate() {},
 			}));
