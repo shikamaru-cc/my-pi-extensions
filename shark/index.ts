@@ -1,6 +1,8 @@
 import { VERSION, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
-import { basename } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { hostname, platform, release } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const SHARK_PALETTE: Record<string, string | null> = {
 	".": null,
@@ -124,6 +126,117 @@ type HeaderInfo = {
 	command: string;
 };
 
+type UsageBucket = {
+	bucketStart: number;
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+	calls: number;
+};
+
+type UsageStore = {
+	version: 1;
+	updatedAt: number;
+	buckets: Record<string, UsageBucket>;
+};
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const WEEK_MS = 7 * DAY_MS;
+const RETENTION_MS = 14 * DAY_MS;
+const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
+const USAGE_STORE_PATH = join(EXTENSION_DIR, "usage-hourly.json");
+const seenMessageKeys = new Set<string>();
+
+function loadUsageStore(): UsageStore {
+	if (!existsSync(USAGE_STORE_PATH)) {
+		return { version: 1, updatedAt: Date.now(), buckets: {} };
+	}
+
+	try {
+		const raw = readFileSync(USAGE_STORE_PATH, "utf8");
+		const parsed = JSON.parse(raw) as Partial<UsageStore>;
+		return {
+			version: 1,
+			updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
+			buckets: parsed.buckets ?? {},
+		};
+	} catch {
+		return { version: 1, updatedAt: Date.now(), buckets: {} };
+	}
+}
+
+function saveUsageStore(store: UsageStore): void {
+	mkdirSync(EXTENSION_DIR, { recursive: true });
+	writeFileSync(USAGE_STORE_PATH, JSON.stringify(store), "utf8");
+}
+
+function pruneUsageStore(store: UsageStore, now = Date.now()): UsageStore {
+	const minBucket = Math.floor((now - RETENTION_MS) / HOUR_MS) * HOUR_MS;
+	const buckets = Object.fromEntries(
+		Object.entries(store.buckets).filter(([, bucket]) => bucket.bucketStart >= minBucket),
+	);
+	return { version: 1, updatedAt: now, buckets };
+}
+
+function recordUsage(timestamp: number, usage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number }): void {
+	const bucketStart = Math.floor(timestamp / HOUR_MS) * HOUR_MS;
+	const bucketKey = String(bucketStart);
+	const store = pruneUsageStore(loadUsageStore(), timestamp);
+	const current = store.buckets[bucketKey] ?? {
+		bucketStart,
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		total: 0,
+		calls: 0,
+	};
+
+	current.input += usage.input;
+	current.output += usage.output;
+	current.cacheRead += usage.cacheRead;
+	current.cacheWrite += usage.cacheWrite;
+	current.total += usage.totalTokens;
+	current.calls += 1;
+	store.buckets[bucketKey] = current;
+	store.updatedAt = timestamp;
+	saveUsageStore(store);
+}
+
+function aggregateUsageWindow(store: UsageStore, windowMs: number, now = Date.now()): UsageBucket {
+	const minTimestamp = now - windowMs;
+	const result: UsageBucket = {
+		bucketStart: Math.floor(now / HOUR_MS) * HOUR_MS,
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		total: 0,
+		calls: 0,
+	};
+
+	for (const bucket of Object.values(store.buckets)) {
+		if (bucket.bucketStart < minTimestamp) continue;
+		result.input += bucket.input;
+		result.output += bucket.output;
+		result.cacheRead += bucket.cacheRead;
+		result.cacheWrite += bucket.cacheWrite;
+		result.total += bucket.total;
+		result.calls += bucket.calls;
+	}
+
+	return result;
+}
+
+function formatTokenCount(value: number): string {
+	if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
+	if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+	return String(value);
+}
+
 function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 	const white = (value: string) => `\u001b[97m${value}\u001b[0m`;
 	const artLines = renderAnsiHalf(SHARK_ART, SHARK_PALETTE);
@@ -161,12 +274,13 @@ function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
 	const hh = String(now.getHours()).padStart(2, "0");
 	const mi = String(now.getMinutes()).padStart(2, "0");
 	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "-";
+	const sessionName = ctx.sessionManager.getSessionName?.() ?? ctx.sessionManager.getSessionId();
 
 	return {
 		model,
 		cwd: ctx.cwd,
 		workspace: basename(ctx.cwd) || ctx.cwd,
-		session: ctx.sessionManager.sessionName ?? ctx.sessionManager.sessionId,
+		session: sessionName,
 		host: `${hostname()} ${platform()} ${release()}`,
 		node: process.version,
 		time: `${yyyy}-${mm}-${dd} ${hh}:${mi}`,
@@ -184,6 +298,33 @@ export default function sharkExtension(pi: ExtensionAPI) {
 			},
 			invalidate() {},
 		}));
+	});
+
+	pi.on("message_end", async (event) => {
+		const message = event.message as {
+			role?: string;
+			timestamp?: number;
+			responseId?: string;
+			usage?: {
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+				totalTokens: number;
+			};
+		};
+		if (message.role !== "assistant" || !message.usage) return;
+		if (message.usage.totalTokens <= 0) return;
+
+		const messageKey = message.responseId ?? `${message.timestamp ?? Date.now()}:${message.usage.totalTokens}`;
+		if (seenMessageKeys.has(messageKey)) return;
+		seenMessageKeys.add(messageKey);
+		if (seenMessageKeys.size > 512) {
+			const oldest = seenMessageKeys.values().next().value;
+			if (oldest) seenMessageKeys.delete(oldest);
+		}
+
+		recordUsage(message.timestamp ?? Date.now(), message.usage);
 	});
 
 	pi.registerCommand("shark-header-off", {
@@ -204,6 +345,28 @@ export default function sharkExtension(pi: ExtensionAPI) {
 				invalidate() {},
 			}));
 			ctx.ui.notify("Enabled shark header", "info");
+		},
+	});
+
+	pi.registerCommand("shark-usage", {
+		description: "Show shark token usage for 5h, 1d, and 7d",
+		handler: async (_args, ctx) => {
+			const store = pruneUsageStore(loadUsageStore());
+			saveUsageStore(store);
+
+			const usage5h = aggregateUsageWindow(store, 5 * HOUR_MS);
+			const usage1d = aggregateUsageWindow(store, DAY_MS);
+			const usage7d = aggregateUsageWindow(store, WEEK_MS);
+			const lines = [
+				"shark usage",
+				"-----------",
+				`5h: ${formatTokenCount(usage5h.total)} tokens in ${usage5h.calls} calls`,
+				`1d: ${formatTokenCount(usage1d.total)} tokens in ${usage1d.calls} calls`,
+				`7d: ${formatTokenCount(usage7d.total)} tokens in ${usage7d.calls} calls`,
+				"",
+				`store: ${USAGE_STORE_PATH}`,
+			];
+			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 }
