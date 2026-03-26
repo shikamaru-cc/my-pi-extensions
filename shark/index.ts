@@ -131,8 +131,11 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 	const reset = "\u001b[0m";
 	const shark = (value: string) => `${accent}\u001b[1m${value}${reset}`;
 	const key = (label: string) => `${accent}${label}:${reset} `;
+	const titleText = "shark";
 	const infoLines = [
-		shark("shark") + white(` pi v${VERSION}`),
+		shark("shark"),
+		white("-".repeat(titleText.length)),
+		key("pi") + white(`v${VERSION}`),
 		key("model") + white(info.model),
 		key("cwd") + white(info.cwd),
 		key("workspace") + white(info.workspace),
