@@ -123,7 +123,6 @@ type HeaderInfo = {
 	host: string;
 	node: string;
 	time: string;
-	command: string;
 };
 
 type UsageBucket = {
@@ -256,7 +255,6 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 		key("host") + white(info.host),
 		key("node") + white(info.node),
 		key("time") + white(info.time),
-		key("command") + white(info.command),
 	];
 	const gap = "   ";
 
@@ -284,7 +282,6 @@ function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
 		host: `${hostname()} ${platform()} ${release()}`,
 		node: process.version,
 		time: `${yyyy}-${mm}-${dd} ${hh}:${mi}`,
-		command: "/shark-header-off",
 	};
 }
 
@@ -327,26 +324,6 @@ export default function sharkExtension(pi: ExtensionAPI) {
 		recordUsage(message.timestamp ?? Date.now(), message.usage);
 	});
 
-	pi.registerCommand("shark-header-off", {
-		description: "Restore pi's default startup header",
-		handler: async (_args, ctx) => {
-			ctx.ui.setHeader(undefined);
-			ctx.ui.notify("Restored default header", "info");
-		},
-	});
-
-	pi.registerCommand("shark-header-on", {
-		description: "Enable the shark startup header",
-		handler: async (_args, ctx) => {
-			ctx.ui.setHeader((_tui, theme) => ({
-				render(_width: number): string[] {
-					return getSharkAscii(theme, getHeaderInfo(ctx));
-				},
-				invalidate() {},
-			}));
-			ctx.ui.notify("Enabled shark header", "info");
-		},
-	});
 
 	pi.registerCommand("shark-usage", {
 		description: "Show shark token usage for 5h, 1d, and 7d",
