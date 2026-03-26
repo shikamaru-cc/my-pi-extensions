@@ -137,7 +137,7 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 		white("-".repeat(titleText.length)),
 		key("pi") + white(`v${VERSION}`),
 		key("model") + white(info.model),
-		key("cwd") + white(info.cwd),
+		key("directory") + white(info.cwd),
 		key("workspace") + white(info.workspace),
 		key("session") + white(info.session),
 		key("host") + white(info.host),
