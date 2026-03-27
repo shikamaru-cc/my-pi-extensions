@@ -1,4 +1,5 @@
 import { VERSION, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -118,6 +119,7 @@ function renderAnsiHalf(art: string[], palette: Record<string, string | null>): 
 type HeaderInfo = {
 	model: string;
 	cwd: string;
+	branch: string;
 	usage5h: string;
 	usage1d: string;
 	usage7d: string;
@@ -352,6 +354,18 @@ function getSkillSummary(cwd: string): string {
 	return `global ${globalAuto} project ${projectAuto} settings ${settingsCount} package ${packageCount}`;
 }
 
+function getGitBranch(cwd: string): string {
+	try {
+		return execFileSync("git", ["branch", "--show-current"], {
+			cwd,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim() || "-";
+	} catch {
+		return "-";
+	}
+}
+
 function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 	const white = (value: string) => `\u001b[97m${value}\u001b[0m`;
 	const artLines = renderAnsiHalf(SHARK_ART, SHARK_PALETTE);
@@ -367,6 +381,7 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 		key("pi") + white(`v${VERSION}`),
 		key("model") + white(info.model),
 		key("directory") + white(info.cwd),
+		key("branch") + white(info.branch),
 		key("skills") + white(info.skills),
 		key("extensions") + white(info.extensions),
 		key("tokens 5h") + white(info.usage5h),
@@ -391,6 +406,7 @@ function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
 	return {
 		model,
 		cwd: ctx.cwd,
+		branch: getGitBranch(ctx.cwd),
 		usage5h: formatUsagePair(usage5h),
 		usage1d: formatUsagePair(usage1d),
 		usage7d: formatUsagePair(usage7d),
