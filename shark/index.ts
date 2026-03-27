@@ -419,9 +419,10 @@ export default function sharkExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 
+		const headerInfo = getHeaderInfo(ctx);
 		ctx.ui.setHeader((_tui, theme) => ({
 			render(_width: number): string[] {
-				return getSharkAscii(theme, getHeaderInfo(ctx));
+				return getSharkAscii(theme, headerInfo);
 			},
 			invalidate() {},
 		}));
