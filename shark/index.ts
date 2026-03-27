@@ -1,7 +1,6 @@
 import { VERSION, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { hostname, platform, release } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SHARK_PALETTE: Record<string, string | null> = {
@@ -122,7 +121,7 @@ type HeaderInfo = {
 	usage5h: string;
 	usage1d: string;
 	usage7d: string;
-	host: string;
+	extensions: string;
 	node: string;
 	time: string;
 };
@@ -147,6 +146,8 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
 const RETENTION_MS = 14 * DAY_MS;
+const HOME_DIR = process.env.HOME ?? "~";
+const AGENT_DIR = process.env.PI_CODING_AGENT_DIR ? resolve(process.env.PI_CODING_AGENT_DIR) : join(HOME_DIR, ".pi", "agent");
 const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
 const USAGE_STORE_PATH = join(EXTENSION_DIR, "usage-hourly.json");
 const seenMessageKeys = new Set<string>();
@@ -244,6 +245,61 @@ function formatUsagePair(bucket: UsageBucket): string {
 	return `in ${formatTokenCount(totalInput)} out ${formatTokenCount(totalOutput)}`;
 }
 
+function loadJsonFile(path: string): any {
+	if (!existsSync(path)) return undefined;
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+function countAutoDiscoveredExtensions(extensionsDir: string): number {
+	if (!existsSync(extensionsDir)) return 0;
+
+	try {
+		let count = 0;
+		for (const entry of readdirSync(extensionsDir)) {
+			const entryPath = join(extensionsDir, entry);
+			const stats = statSync(entryPath);
+			if (stats.isFile() && (entry.endsWith(".ts") || entry.endsWith(".js"))) {
+				count += 1;
+				continue;
+			}
+			if (stats.isDirectory() && (existsSync(join(entryPath, "index.ts")) || existsSync(join(entryPath, "index.js")))) {
+				count += 1;
+			}
+		}
+		return count;
+	} catch {
+		return 0;
+	}
+}
+
+function countSettingsExtensions(settingsPath: string): number {
+	const settings = loadJsonFile(settingsPath) as { extensions?: unknown } | undefined;
+	return Array.isArray(settings?.extensions) ? settings.extensions.length : 0;
+}
+
+function countSettingsPackages(settingsPath: string): number {
+	const settings = loadJsonFile(settingsPath) as { packages?: unknown } | undefined;
+	return Array.isArray(settings?.packages) ? settings.packages.length : 0;
+}
+
+function getExtensionSummary(cwd: string): string {
+	const globalExtensionsDir = join(AGENT_DIR, "extensions");
+	const projectPiDir = join(cwd, ".pi");
+	const projectExtensionsDir = join(projectPiDir, "extensions");
+	const globalSettingsPath = join(AGENT_DIR, "settings.json");
+	const projectSettingsPath = join(projectPiDir, "settings.json");
+	const globalAuto = countAutoDiscoveredExtensions(globalExtensionsDir);
+	const projectAuto = countAutoDiscoveredExtensions(projectExtensionsDir);
+	const settingsCount = countSettingsExtensions(globalSettingsPath) + countSettingsExtensions(projectSettingsPath);
+	const packageCount = countSettingsPackages(globalSettingsPath) + countSettingsPackages(projectSettingsPath);
+
+	return `global ${globalAuto} project ${projectAuto} settings ${settingsCount} package ${packageCount}`;
+}
+
 function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 	const white = (value: string) => `\u001b[97m${value}\u001b[0m`;
 	const artLines = renderAnsiHalf(SHARK_ART, SHARK_PALETTE);
@@ -262,7 +318,7 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 		key("tokens 5h") + white(info.usage5h),
 		key("tokens 1d") + white(info.usage1d),
 		key("tokens 7d") + white(info.usage7d),
-		key("host") + white(info.host),
+		key("extensions") + white(info.extensions),
 		key("node") + white(info.node),
 		key("time") + white(info.time),
 	];
@@ -293,7 +349,7 @@ function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
 		usage5h: formatUsagePair(usage5h),
 		usage1d: formatUsagePair(usage1d),
 		usage7d: formatUsagePair(usage7d),
-		host: `${hostname()} ${platform()} ${release()}`,
+		extensions: getExtensionSummary(ctx.cwd),
 		node: process.version,
 		time: `${yyyy}-${mm}-${dd} ${hh}:${mi}`,
 	};
