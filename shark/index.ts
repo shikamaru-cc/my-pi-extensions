@@ -41,6 +41,7 @@ const SHARK_PALETTE: Record<string, string | null> = {
 };
 
 const SHARK_ART = [
+	".........................",
 	"..............A..........",
 	".............BC..........",
 	"............DEED.........",
@@ -245,6 +246,7 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 	const key = (label: string) => `${accent}${label}:${reset} `;
 	const titleText = "shark your coding harness";
 	const infoLines = [
+    "",
 		shark(titleText),
 		white("-".repeat(titleText.length)),
 		key("pi") + white(`v${VERSION}`),
