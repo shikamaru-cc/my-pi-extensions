@@ -243,7 +243,7 @@ function formatTokenCount(value: number): string {
 function formatUsagePair(bucket: UsageBucket): string {
 	const totalInput = bucket.input + bucket.cacheRead;
 	const totalOutput = bucket.output + bucket.cacheWrite;
-	return `in ${formatTokenCount(totalInput)} out ${formatTokenCount(totalOutput)}`;
+	return `${formatTokenCount(totalInput)} (in) , ${formatTokenCount(totalOutput)} (out)`;
 }
 
 function loadJsonFile(path: string): any {
@@ -339,7 +339,7 @@ function getExtensionSummary(cwd: string): string {
 	const settingsCount = countSettingsExtensions(globalSettingsPath) + countSettingsExtensions(projectSettingsPath);
 	const packageCount = countSettingsPackages(globalSettingsPath) + countSettingsPackages(projectSettingsPath);
 
-	return `global ${globalAuto} project ${projectAuto} settings ${settingsCount} package ${packageCount}`;
+	return `${globalAuto} (global) , ${projectAuto} (project) , ${settingsCount} (settings) , ${packageCount} (package)`;
 }
 
 function getSkillSummary(cwd: string): string {
@@ -351,7 +351,7 @@ function getSkillSummary(cwd: string): string {
 	const settingsCount = countSettingsSkills(globalSettingsPath) + countSettingsSkills(projectSettingsPath);
 	const packageCount = countSettingsPackages(globalSettingsPath) + countSettingsPackages(projectSettingsPath);
 
-	return `global ${globalAuto} project ${projectAuto} settings ${settingsCount} package ${packageCount}`;
+	return `${globalAuto} (global) , ${projectAuto} (project) , ${settingsCount} (settings) , ${packageCount} (package)`;
 }
 
 function getGitBranch(cwd: string): string {
@@ -378,15 +378,15 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
     "",
 		shark(titleText),
 		white("-".repeat(titleText.length)),
-		key("pi") + white(`v${VERSION}`),
-		key("model") + white(info.model),
-		key("directory") + white(info.cwd),
-		key("branch") + white(info.branch),
-		key("skills") + white(info.skills),
-		key("extensions") + white(info.extensions),
-		key("tokens 5h") + white(info.usage5h),
-		key("tokens 1d") + white(info.usage1d),
-		key("tokens 7d") + white(info.usage7d),
+		key("Pi") + white(`v${VERSION}`),
+		key("Model") + white(info.model),
+		key("Directory") + white(info.cwd),
+		key("Branch") + white(info.branch),
+		key("Skills") + white(info.skills),
+		key("Extensions") + white(info.extensions),
+		key("Tokens 5h") + white(info.usage5h),
+		key("Tokens 1d") + white(info.usage1d),
+		key("Tokens 7d") + white(info.usage7d),
 	];
 	const gap = "   ";
 
