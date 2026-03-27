@@ -123,8 +123,6 @@ type HeaderInfo = {
 	usage7d: string;
 	extensions: string;
 	skills: string;
-	node: string;
-	time: string;
 };
 
 type UsageBucket = {
@@ -369,13 +367,11 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 		key("pi") + white(`v${VERSION}`),
 		key("model") + white(info.model),
 		key("directory") + white(info.cwd),
+		key("skills") + white(info.skills),
+		key("extensions") + white(info.extensions),
 		key("tokens 5h") + white(info.usage5h),
 		key("tokens 1d") + white(info.usage1d),
 		key("tokens 7d") + white(info.usage7d),
-		key("extensions") + white(info.extensions),
-		key("skills") + white(info.skills),
-		key("node") + white(info.node),
-		key("time") + white(info.time),
 	];
 	const gap = "   ";
 
@@ -386,12 +382,6 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 }
 
 function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
-	const now = new Date();
-	const yyyy = now.getFullYear();
-	const mm = String(now.getMonth() + 1).padStart(2, "0");
-	const dd = String(now.getDate()).padStart(2, "0");
-	const hh = String(now.getHours()).padStart(2, "0");
-	const mi = String(now.getMinutes()).padStart(2, "0");
 	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "-";
 	const store = pruneUsageStore(loadUsageStore());
 	const usage5h = aggregateUsageWindow(store, 5 * HOUR_MS);
@@ -406,8 +396,6 @@ function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
 		usage7d: formatUsagePair(usage7d),
 		extensions: getExtensionSummary(ctx.cwd),
 		skills: getSkillSummary(ctx.cwd),
-		node: process.version,
-		time: `${yyyy}-${mm}-${dd} ${hh}:${mi}`,
 	};
 }
 
