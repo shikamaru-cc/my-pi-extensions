@@ -239,7 +239,9 @@ function formatTokenCount(value: number): string {
 }
 
 function formatUsagePair(bucket: UsageBucket): string {
-	return `in ${formatTokenCount(bucket.input)} out ${formatTokenCount(bucket.output)}`;
+	const totalInput = bucket.input + bucket.cacheRead;
+	const totalOutput = bucket.output + bucket.cacheWrite;
+	return `in ${formatTokenCount(totalInput)} out ${formatTokenCount(totalOutput)}`;
 }
 
 function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
