@@ -122,6 +122,7 @@ type HeaderInfo = {
 	usage1d: string;
 	usage7d: string;
 	extensions: string;
+	skills: string;
 	node: string;
 	time: string;
 };
@@ -286,6 +287,47 @@ function countSettingsPackages(settingsPath: string): number {
 	return Array.isArray(settings?.packages) ? settings.packages.length : 0;
 }
 
+function countSkillsInDir(skillsDir: string): number {
+	if (!existsSync(skillsDir)) return 0;
+
+	try {
+		let count = 0;
+		for (const entry of readdirSync(skillsDir)) {
+			const entryPath = join(skillsDir, entry);
+			const stats = statSync(entryPath);
+			if (stats.isFile() && entry.endsWith(".md")) {
+				count += 1;
+				continue;
+			}
+			if (stats.isDirectory() && existsSync(join(entryPath, "SKILL.md"))) {
+				count += 1;
+			}
+		}
+		return count;
+	} catch {
+		return 0;
+	}
+}
+
+function getAncestorAgentsSkillsDirs(cwd: string): string[] {
+	const dirs: string[] = [];
+	let current = resolve(cwd);
+
+	while (true) {
+		dirs.push(join(current, ".agents", "skills"));
+		const parent = dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+
+	return dirs;
+}
+
+function countSettingsSkills(settingsPath: string): number {
+	const settings = loadJsonFile(settingsPath) as { skills?: unknown } | undefined;
+	return Array.isArray(settings?.skills) ? settings.skills.length : 0;
+}
+
 function getExtensionSummary(cwd: string): string {
 	const globalExtensionsDir = join(AGENT_DIR, "extensions");
 	const projectPiDir = join(cwd, ".pi");
@@ -295,6 +337,18 @@ function getExtensionSummary(cwd: string): string {
 	const globalAuto = countAutoDiscoveredExtensions(globalExtensionsDir);
 	const projectAuto = countAutoDiscoveredExtensions(projectExtensionsDir);
 	const settingsCount = countSettingsExtensions(globalSettingsPath) + countSettingsExtensions(projectSettingsPath);
+	const packageCount = countSettingsPackages(globalSettingsPath) + countSettingsPackages(projectSettingsPath);
+
+	return `global ${globalAuto} project ${projectAuto} settings ${settingsCount} package ${packageCount}`;
+}
+
+function getSkillSummary(cwd: string): string {
+	const projectPiDir = join(cwd, ".pi");
+	const globalSettingsPath = join(AGENT_DIR, "settings.json");
+	const projectSettingsPath = join(projectPiDir, "settings.json");
+	const globalAuto = countSkillsInDir(join(AGENT_DIR, "skills")) + countSkillsInDir(join(HOME_DIR, ".agents", "skills"));
+	const projectAuto = countSkillsInDir(join(projectPiDir, "skills")) + getAncestorAgentsSkillsDirs(cwd).reduce((sum, dir) => sum + countSkillsInDir(dir), 0);
+	const settingsCount = countSettingsSkills(globalSettingsPath) + countSettingsSkills(projectSettingsPath);
 	const packageCount = countSettingsPackages(globalSettingsPath) + countSettingsPackages(projectSettingsPath);
 
 	return `global ${globalAuto} project ${projectAuto} settings ${settingsCount} package ${packageCount}`;
@@ -319,6 +373,7 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 		key("tokens 1d") + white(info.usage1d),
 		key("tokens 7d") + white(info.usage7d),
 		key("extensions") + white(info.extensions),
+		key("skills") + white(info.skills),
 		key("node") + white(info.node),
 		key("time") + white(info.time),
 	];
@@ -350,6 +405,7 @@ function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
 		usage1d: formatUsagePair(usage1d),
 		usage7d: formatUsagePair(usage7d),
 		extensions: getExtensionSummary(ctx.cwd),
+		skills: getSkillSummary(ctx.cwd),
 		node: process.version,
 		time: `${yyyy}-${mm}-${dd} ${hh}:${mi}`,
 	};
