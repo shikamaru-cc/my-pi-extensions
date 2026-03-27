@@ -1,6 +1,6 @@
 import { VERSION, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { hostname, platform, release } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -119,8 +119,9 @@ function renderAnsiHalf(art: string[], palette: Record<string, string | null>): 
 type HeaderInfo = {
 	model: string;
 	cwd: string;
-	workspace: string;
-	session: string;
+	usage5h: string;
+	usage1d: string;
+	usage7d: string;
 	host: string;
 	node: string;
 	time: string;
@@ -237,6 +238,10 @@ function formatTokenCount(value: number): string {
 	return String(value);
 }
 
+function formatUsagePair(bucket: UsageBucket): string {
+	return `in ${formatTokenCount(bucket.input)} out ${formatTokenCount(bucket.output)}`;
+}
+
 function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 	const white = (value: string) => `\u001b[97m${value}\u001b[0m`;
 	const artLines = renderAnsiHalf(SHARK_ART, SHARK_PALETTE);
@@ -252,8 +257,9 @@ function getSharkAscii(theme: Theme, info: HeaderInfo): string[] {
 		key("pi") + white(`v${VERSION}`),
 		key("model") + white(info.model),
 		key("directory") + white(info.cwd),
-		key("workspace") + white(info.workspace),
-		key("session") + white(info.session),
+		key("tokens 5h") + white(info.usage5h),
+		key("tokens 1d") + white(info.usage1d),
+		key("tokens 7d") + white(info.usage7d),
 		key("host") + white(info.host),
 		key("node") + white(info.node),
 		key("time") + white(info.time),
@@ -274,13 +280,17 @@ function getHeaderInfo(ctx: ExtensionContext): HeaderInfo {
 	const hh = String(now.getHours()).padStart(2, "0");
 	const mi = String(now.getMinutes()).padStart(2, "0");
 	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "-";
-	const sessionName = ctx.sessionManager.getSessionName?.() ?? ctx.sessionManager.getSessionId();
+	const store = pruneUsageStore(loadUsageStore());
+	const usage5h = aggregateUsageWindow(store, 5 * HOUR_MS);
+	const usage1d = aggregateUsageWindow(store, DAY_MS);
+	const usage7d = aggregateUsageWindow(store, WEEK_MS);
 
 	return {
 		model,
 		cwd: ctx.cwd,
-		workspace: basename(ctx.cwd) || ctx.cwd,
-		session: sessionName,
+		usage5h: formatUsagePair(usage5h),
+		usage1d: formatUsagePair(usage1d),
+		usage7d: formatUsagePair(usage7d),
 		host: `${hostname()} ${platform()} ${release()}`,
 		node: process.version,
 		time: `${yyyy}-${mm}-${dd} ${hh}:${mi}`,
