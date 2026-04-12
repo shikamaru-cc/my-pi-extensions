@@ -6,8 +6,8 @@ import { basename, join, resolve } from "node:path";
 
 import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme, isToolCallEventType } from "@mariozechner/pi-coding-agent";
-import type { Component, TUI } from "@mariozechner/pi-tui";
-import { Container, Markdown, Spacer, Text, matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { Type } from "@sinclair/typebox";
 
 type GitResult = {
 	stdout: string;
@@ -27,15 +27,6 @@ type CommitToolCall = {
 	args: Record<string, unknown>;
 };
 
-type CommitSubagentResult = {
-	exitCode: number;
-	stderr: string;
-	finalOutput: string;
-	stopReason?: string;
-	errorMessage?: string;
-	toolCalls: CommitToolCall[];
-};
-
 type CommitStreamEntry =
 	| { kind: "status"; text: string }
 	| { kind: "tool"; text: string }
@@ -49,16 +40,27 @@ type CommitSubagentStreamHandlers = {
 	onStderr?: (text: string) => void;
 };
 
+type CommitSubagentResult = {
+	exitCode: number;
+	stderr: string;
+	finalOutput: string;
+	stopReason?: string;
+	errorMessage?: string;
+	toolCalls: CommitToolCall[];
+};
+
 type CommitOutcome = "committed" | "no-commit" | "failed";
 
-type CommitResultViewModel = {
-	outcome: CommitOutcome;
-	outcomeLine: string;
+type CommitToolDetails = {
+	phase: "running" | "done";
 	repoCwd: string;
 	branch: string;
 	headBefore: string | null;
 	headAfter: string | null;
-	commitSubject: string | null;
+	outcome?: CommitOutcome;
+	outcomeLine?: string;
+	commitSubject?: string | null;
+	entries: CommitStreamEntry[];
 	finalOutput: string;
 	stderr: string;
 	toolCalls: CommitToolCall[];
@@ -71,8 +73,9 @@ const MAX_INLINE_DIFF_LINES = 150;
 const MAX_UNTRACKED_FILES = 5;
 const MAX_UNTRACKED_FILE_BYTES = 64_000;
 const MAX_UNTRACKED_FILE_CHARS = 4_000;
+const MAX_COLLAPSED_ENTRIES = 8;
 const COMMIT_SUBAGENT_TOOLS = ["bash", "read", "edit", "write"];
-const COMMIT_RESULT_VISIBLE_LINES = 18;
+const COMMIT_TOOL_NAME = "commit_subagent";
 
 async function runGit(pi: ExtensionAPI, args: string[], cwd?: string): Promise<GitResult> {
 	try {
@@ -139,25 +142,14 @@ function parseDiffSummary(output: string): DiffSummary {
 		const addedCount = Number(added);
 		const deletedCount = Number(deleted);
 
-		if (Number.isFinite(addedCount)) {
-			additions += addedCount;
-		} else {
-			hasBinary = true;
-		}
+		if (Number.isFinite(addedCount)) additions += addedCount;
+		else hasBinary = true;
 
-		if (Number.isFinite(deletedCount)) {
-			deletions += deletedCount;
-		} else {
-			hasBinary = true;
-		}
+		if (Number.isFinite(deletedCount)) deletions += deletedCount;
+		else hasBinary = true;
 	}
 
-	return {
-		files: lines.length,
-		additions,
-		deletions,
-		hasBinary,
-	};
+	return { files: lines.length, additions, deletions, hasBinary };
 }
 
 function uniqueSorted(items: string[]): string[] {
@@ -201,10 +193,7 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 	const execName = basename(process.execPath).toLowerCase();
 	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-	if (!isGenericRuntime) {
-		return { command: process.execPath, args };
-	}
-
+	if (!isGenericRuntime) return { command: process.execPath, args };
 	return { command: "pi", args };
 }
 
@@ -217,18 +206,15 @@ async function writeTempPromptFile(content: string): Promise<{ dir: string; file
 
 function extractAssistantText(message: any): string {
 	if (!message || !Array.isArray(message.content)) return "";
-
 	const parts = message.content
 		.filter((part: any) => part?.type === "text" && typeof part.text === "string")
 		.map((part: any) => part.text.trim())
 		.filter(Boolean);
-
 	return parts.join("\n\n").trim();
 }
 
 function extractToolCalls(message: any): CommitToolCall[] {
 	if (!message || !Array.isArray(message.content)) return [];
-
 	const result: CommitToolCall[] = [];
 	for (const part of message.content) {
 		if (!part || part.type !== "toolCall" || typeof part.name !== "string") continue;
@@ -242,7 +228,7 @@ async function startCommitSubagent(
 	prompt: string,
 	cwd: string,
 	handlers: CommitSubagentStreamHandlers = {},
-): Promise<{ result: Promise<CommitSubagentResult>; abort: () => void }> {
+): Promise<{ result: Promise<CommitSubagentResult> }> {
 	const tempPrompt = await writeTempPromptFile(prompt);
 	const args = [
 		"--mode",
@@ -262,7 +248,6 @@ async function startCommitSubagent(
 		shell: false,
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	let aborted = false;
 
 	handlers.onStatus?.("Subagent started.");
 
@@ -317,7 +302,7 @@ async function startCommitSubagent(
 
 		proc.on("close", async (code) => {
 			if (buffer.trim()) processLine(buffer);
-			handlers.onStatus?.(aborted ? "Subagent aborted." : "Subagent finished.");
+			handlers.onStatus?.("Subagent finished.");
 			await rm(tempPrompt.dir, { recursive: true, force: true });
 			resolvePromise({
 				exitCode: code ?? 1,
@@ -343,17 +328,7 @@ async function startCommitSubagent(
 		});
 	});
 
-	const abort = () => {
-		if (proc.killed) return;
-		aborted = true;
-		handlers.onStatus?.("Aborting subagent...");
-		proc.kill("SIGTERM");
-		setTimeout(() => {
-			if (!proc.killed) proc.kill("SIGKILL");
-		}, 5000);
-	};
-
-	return { result, abort };
+	return { result };
 }
 
 function looksBinary(buffer: Buffer): boolean {
@@ -371,10 +346,7 @@ async function buildUntrackedPreview(cwd: string, relativePath: string): Promise
 		return `File: ${relativePath}\n[Unable to read file metadata]`;
 	}
 
-	if (!fileStat.isFile()) {
-		return `File: ${relativePath}\n[Not a regular file]`;
-	}
-
+	if (!fileStat.isFile()) return `File: ${relativePath}\n[Not a regular file]`;
 	if (fileStat.size > MAX_UNTRACKED_FILE_BYTES) {
 		return `File: ${relativePath}\n[Skipped preview: file is ${fileStat.size} bytes, larger than the ${MAX_UNTRACKED_FILE_BYTES}-byte preview limit]`;
 	}
@@ -386,10 +358,7 @@ async function buildUntrackedPreview(cwd: string, relativePath: string): Promise
 		return `File: ${relativePath}\n[Unable to read file contents]`;
 	}
 
-	if (looksBinary(buffer)) {
-		return `File: ${relativePath}\n[Skipped preview: binary file]`;
-	}
-
+	if (looksBinary(buffer)) return `File: ${relativePath}\n[Skipped preview: binary file]`;
 	const content = clip(buffer.toString("utf8"), MAX_UNTRACKED_FILE_CHARS);
 	return `File: ${relativePath}\n\n\`\`\`\n${content}\n\`\`\``;
 }
@@ -422,17 +391,6 @@ function getOutcomeLabel(outcome: CommitOutcome): string {
 	}
 }
 
-function getOutcomeIcon(theme: Theme, outcome: CommitOutcome): string {
-	switch (outcome) {
-		case "committed":
-			return theme.fg("success", "✓");
-		case "failed":
-			return theme.fg("error", "✗");
-		default:
-			return theme.fg("warning", "●");
-	}
-}
-
 function getOutcomeText(theme: Theme, outcome: CommitOutcome, text: string): string {
 	switch (outcome) {
 		case "committed":
@@ -444,304 +402,192 @@ function getOutcomeText(theme: Theme, outcome: CommitOutcome, text: string): str
 	}
 }
 
-function formatCommitToolCall(theme: Theme, toolCall: CommitToolCall): string {
+function formatCommitToolCallText(toolCall: CommitToolCall): string {
 	switch (toolCall.name) {
 		case "bash": {
 			const command = typeof toolCall.args.command === "string" ? toolCall.args.command : "...";
-			return `${theme.fg("muted", "$ ")}${theme.fg("toolOutput", shorten(command, 140))}`;
+			return `$ ${shorten(command, 140)}`;
 		}
 		case "read": {
 			const path = typeof toolCall.args.path === "string" ? toolCall.args.path : "...";
 			const offset = typeof toolCall.args.offset === "number" ? toolCall.args.offset : undefined;
 			const limit = typeof toolCall.args.limit === "number" ? toolCall.args.limit : undefined;
 			const range = offset !== undefined ? `:${offset}${limit !== undefined ? `-${offset + limit - 1}` : ""}` : "";
-			return `${theme.fg("muted", "read ")}${theme.fg("accent", `${path}${range}`)}`;
+			return `read ${path}${range}`;
 		}
 		case "edit": {
 			const path = typeof toolCall.args.path === "string" ? toolCall.args.path : "...";
-			return `${theme.fg("muted", "edit ")}${theme.fg("accent", path)}`;
+			return `edit ${path}`;
 		}
 		case "write": {
 			const path = typeof toolCall.args.path === "string" ? toolCall.args.path : "...";
-			return `${theme.fg("muted", "write ")}${theme.fg("accent", path)}`;
+			return `write ${path}`;
 		}
 		default:
-			return `${theme.fg("muted", `${toolCall.name} `)}${theme.fg("dim", shorten(JSON.stringify(toolCall.args), 120))}`;
+			return `${toolCall.name} ${shorten(JSON.stringify(toolCall.args), 120)}`;
 	}
 }
 
-class CommitResultViewer implements Component {
-	private scrollOffset = 0;
-	private cachedWidth?: number;
-	private cachedContentLines?: string[];
-	private entries: CommitStreamEntry[] = [];
-	private details?: CommitResultViewModel;
-	private running = true;
-	private aborting = false;
-	private abortFn?: () => void;
-
-	constructor(
-		private readonly tui: TUI,
-		private readonly theme: Theme,
-		private readonly repoCwd: string,
-		private readonly branch: string,
-		private readonly headBefore: string | null,
-		private readonly done: () => void,
-	) {}
-
-	setAbort(fn: () => void): void {
-		this.abortFn = fn;
+function formatCommitToolCall(theme: Theme, toolCall: CommitToolCall): string {
+	const text = formatCommitToolCallText(toolCall);
+	if (text.startsWith("$ ")) {
+		return `${theme.fg("muted", "$ ")}${theme.fg("toolOutput", text.slice(2))}`;
 	}
-
-	pushStatus(text: string): void {
-		this.entries.push({ kind: "status", text });
-		this.bumpScrollToBottom();
+	if (text.startsWith("read ")) {
+		return `${theme.fg("muted", "read ")}${theme.fg("accent", text.slice(5))}`;
 	}
-
-	pushToolCall(toolCall: CommitToolCall): void {
-		this.entries.push({ kind: "tool", text: formatCommitToolCall(this.theme, toolCall) });
-		this.bumpScrollToBottom();
+	if (text.startsWith("edit ")) {
+		return `${theme.fg("muted", "edit ")}${theme.fg("accent", text.slice(5))}`;
 	}
-
-	pushAssistantText(text: string): void {
-		this.entries.push({ kind: "text", text: shorten(text.replace(/\s+/g, " ").trim(), 220) });
-		this.bumpScrollToBottom();
+	if (text.startsWith("write ")) {
+		return `${theme.fg("muted", "write ")}${theme.fg("accent", text.slice(6))}`;
 	}
+	return `${theme.fg("dim", text)}`;
+}
 
-	pushStderr(text: string): void {
-		for (const line of text.split(/\r?\n/)) {
-			const trimmed = line.trim();
-			if (!trimmed) continue;
-			this.entries.push({ kind: "stderr", text: trimmed });
+function formatEntry(theme: Theme, entry: CommitStreamEntry): string {
+	switch (entry.kind) {
+		case "status":
+			return `${theme.fg("dim", entry.text)}`;
+		case "tool":
+			return `${theme.fg("muted", "→ ")}${entry.text}`;
+		case "stderr":
+			return `${theme.fg("error", entry.text)}`;
+		default:
+			return theme.fg("toolOutput", entry.text);
+	}
+}
+
+function renderCommitToolResult(details: CommitToolDetails, options: { expanded?: boolean; isPartial?: boolean }, theme: Theme) {
+	const expanded = options.expanded ?? false;
+	const mdTheme = getMarkdownTheme();
+	const container = new Container();
+	const status =
+		details.phase === "running"
+			? theme.fg("warning", "running")
+			: details.outcome
+				? getOutcomeText(theme, details.outcome, getOutcomeLabel(details.outcome))
+				: theme.fg("muted", "finished");
+
+	const summary = [
+		`${theme.fg("muted", "Status: ")}${status}`,
+		`${theme.fg("muted", "Repo: ")}${details.repoCwd}`,
+		`${theme.fg("muted", "Branch: ")}${details.branch}`,
+		`${theme.fg("muted", "HEAD before: ")}${formatShortSha(details.headBefore)}`,
+	];
+	if (details.phase === "done") {
+		summary.push(`${theme.fg("muted", "HEAD after: ")}${formatShortSha(details.headAfter)}`);
+		if (details.commitSubject) {
+			summary.push(`${theme.fg("muted", "Commit: ")}${details.commitSubject}`);
 		}
-		this.bumpScrollToBottom();
 	}
+	container.addChild(new Text(summary.join("\n"), 0, 0));
 
-	finish(details: CommitResultViewModel): void {
-		this.running = false;
-		this.aborting = false;
-		this.details = details;
-		this.invalidate();
-		this.tui.requestRender();
-	}
-
-	private bumpScrollToBottom(): void {
-		this.invalidate();
-		this.scrollOffset = Number.MAX_SAFE_INTEGER;
-		this.tui.requestRender();
-	}
-
-	private getContentLines(width: number): string[] {
-		if (this.cachedContentLines && this.cachedWidth === width) {
-			return this.cachedContentLines;
-		}
-
-		const container = new Container();
-		const statusText = this.running
-			? this.aborting
-				? this.theme.fg("warning", "Aborting subagent...")
-				: this.theme.fg("warning", "Streaming subagent activity...")
-			: this.details
-				? getOutcomeText(this.theme, this.details.outcome, getOutcomeLabel(this.details.outcome))
-				: this.theme.fg("muted", "Finished");
-		const metadata = [
-			`${this.theme.fg("muted", "Status: ")}${statusText}`,
-			`${this.theme.fg("muted", "Repository: ")}${this.repoCwd}`,
-			`${this.theme.fg("muted", "Branch: ")}${this.branch || "(unknown)"}`,
-			`${this.theme.fg("muted", "HEAD before: ")}${formatShortSha(this.headBefore)}`,
-			this.theme.fg("dim", "This panel streams isolated subagent activity and does not add anything to the current chat context."),
-		].join("\n");
-		container.addChild(new Text(metadata, 0, 0));
-
+	const visibleEntries = expanded ? details.entries : details.entries.slice(-MAX_COLLAPSED_ENTRIES);
+	if (visibleEntries.length > 0) {
 		container.addChild(new Spacer(1));
-		container.addChild(new Text(this.theme.fg("accent", this.theme.bold("Live activity")), 0, 0));
-		if (this.entries.length === 0) {
-			container.addChild(new Text(this.theme.fg("muted", "Waiting for subagent output..."), 0, 0));
-		} else {
-			const activityText = this.entries
-				.map((entry) => {
-					switch (entry.kind) {
-						case "status":
-							return `${this.theme.fg("muted", "• ")}${this.theme.fg("dim", entry.text)}`;
-						case "tool":
-							return `${this.theme.fg("muted", "→ ")}${entry.text}`;
-						case "stderr":
-							return `${this.theme.fg("error", "! ")}${this.theme.fg("error", entry.text)}`;
-						default:
-							return `${this.theme.fg("toolOutput", entry.text)}`;
-					}
-				})
-				.join("\n");
-			container.addChild(new Text(activityText, 0, 0));
-		}
-
-		if (this.details) {
-			const mdTheme = getMarkdownTheme();
-			const summaryLine = this.details.outcomeLine || getOutcomeLabel(this.details.outcome);
-			const commitLine =
-				this.details.outcome === "committed"
-					? `${formatShortSha(this.details.headAfter)}${this.details.commitSubject ? ` ${this.details.commitSubject}` : ""}`
-					: "HEAD unchanged";
-
-			container.addChild(new Spacer(1));
-			container.addChild(new Text(this.theme.fg("accent", this.theme.bold("Result")), 0, 0));
-			container.addChild(
-				new Text(
-					[
-						`${this.theme.fg("muted", "Outcome: ")}${getOutcomeText(this.theme, this.details.outcome, getOutcomeLabel(this.details.outcome))}`,
-						`${this.theme.fg("muted", "Summary: ")}${summaryLine}`,
-						`${this.theme.fg("muted", this.details.outcome === "committed" ? "New commit: " : "Result: ")}${commitLine}`,
-					].join("\n"),
-					0,
-					0,
-				),
-			);
-
-			if (this.details.finalOutput.trim()) {
-				container.addChild(new Spacer(1));
-				container.addChild(new Text(this.theme.fg("accent", this.theme.bold("Subagent report")), 0, 0));
-				container.addChild(new Markdown(this.details.finalOutput.trim(), 0, 0, mdTheme));
-			}
-
-			if (this.details.stderr.trim()) {
-				container.addChild(new Spacer(1));
-				container.addChild(new Text(this.theme.fg("accent", this.theme.bold("stderr")), 0, 0));
-				container.addChild(new Text(this.theme.fg("error", this.details.stderr.trim()), 0, 0));
-			}
-		}
-
-		const lines = container.render(width);
-		this.cachedWidth = width;
-		this.cachedContentLines = lines;
-		return lines;
-	}
-
-	handleInput(data: string): void {
-		const contentLines = this.cachedContentLines ?? [];
-		const maxOffset = Math.max(0, contentLines.length - COMMIT_RESULT_VISIBLE_LINES);
-
-		if (this.running && (matchesKey(data, "escape") || matchesKey(data, "ctrl+c"))) {
-			this.aborting = true;
-			this.abortFn?.();
-			this.tui.requestRender();
-			return;
-		}
-
-		if (!this.running && (matchesKey(data, "escape") || matchesKey(data, "enter"))) {
-			this.done();
-			return;
-		}
-
-		if (matchesKey(data, "up") || data === "k") {
-			this.scrollOffset = Math.max(0, this.scrollOffset - 1);
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "down") || data === "j") {
-			this.scrollOffset = Math.min(maxOffset, this.scrollOffset + 1);
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "home")) {
-			this.scrollOffset = 0;
-			this.tui.requestRender();
-			return;
-		}
-
-		if (matchesKey(data, "end")) {
-			this.scrollOffset = maxOffset;
-			this.tui.requestRender();
+		container.addChild(new Text(theme.fg("accent", theme.bold(details.phase === "running" ? "Live activity" : "Activity")), 0, 0));
+		container.addChild(new Text(visibleEntries.map((entry) => formatEntry(theme, entry)).join("\n"), 0, 0));
+		if (!expanded && details.entries.length > visibleEntries.length) {
+			container.addChild(new Text(theme.fg("dim", `(showing last ${visibleEntries.length} entries, expand for more)`), 0, 0));
 		}
 	}
 
-	render(width: number): string[] {
-		const innerWidth = Math.max(20, width - 2);
-		const contentLines = this.getContentLines(innerWidth);
-		const visibleLineCount = Math.min(COMMIT_RESULT_VISIBLE_LINES, Math.max(1, contentLines.length || 1));
-		const maxOffset = Math.max(0, contentLines.length - visibleLineCount);
-		this.scrollOffset = Math.min(this.scrollOffset, maxOffset);
-
-		const padLine = (line: string) => {
-			const truncated = truncateToWidth(line, innerWidth, "...", true);
-			const padding = Math.max(0, innerWidth - visibleWidth(truncated));
-			return truncated + " ".repeat(padding);
-		};
-		const border = (text: string) => this.theme.fg("border", text);
-		const statePrefix = this.running
-			? this.aborting
-				? this.theme.fg("warning", "◐")
-				: this.theme.fg("warning", "⏳")
-			: this.details
-				? getOutcomeIcon(this.theme, this.details.outcome)
-				: this.theme.fg("muted", "•");
-		const rawTitle = `${statePrefix} ${this.theme.bold("/commit")}${this.theme.fg("muted", this.running ? " streaming subagent" : " subagent result")}`;
-		const title = truncateToWidth(rawTitle, innerWidth, "...", true);
-		const titlePad = Math.max(0, innerWidth - visibleWidth(title));
-
-		const result: string[] = [];
-		result.push(border("╭") + title + border(`${"─".repeat(titlePad)}╮`));
-
-		const remainingBelow = Math.max(0, contentLines.length - visibleLineCount - this.scrollOffset);
-		const scrollInfo = maxOffset > 0 ? `↑${this.scrollOffset} ↓${remainingBelow}` : "no scroll";
-		result.push(border("│") + padLine(this.theme.fg("dim", ` ${scrollInfo}`)) + border("│"));
-
-		const visibleLines = contentLines.slice(this.scrollOffset, this.scrollOffset + visibleLineCount);
-		for (const line of visibleLines) {
-			result.push(border("│") + padLine(line) + border("│"));
-		}
-
-		for (let i = visibleLines.length; i < visibleLineCount; i++) {
-			result.push(border("│") + " ".repeat(innerWidth) + border("│"));
-		}
-
-		const footer = this.theme.fg(
-			"dim",
-			this.running ? " ↑↓/j/k scroll · Esc/Ctrl+C abort " : " ↑↓/j/k scroll · Home/End jump · Enter/Esc close ",
-		);
-		result.push(border("│") + padLine(footer) + border("│"));
-		result.push(border(`╰${"─".repeat(innerWidth)}╯`));
-		return result;
+	if (details.phase === "done" && details.finalOutput.trim()) {
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Subagent report")), 0, 0));
+		container.addChild(new Markdown(details.finalOutput.trim(), 0, 0, mdTheme));
 	}
 
-	invalidate(): void {
-		this.cachedWidth = undefined;
-		this.cachedContentLines = undefined;
+	if (details.phase === "done" && details.stderr.trim()) {
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("accent", theme.bold("stderr")), 0, 0));
+		container.addChild(new Text(theme.fg("error", details.stderr.trim()), 0, 0));
 	}
+
+	return container;
 }
+
+const CommitToolParams = Type.Object({
+	cwd: Type.Optional(Type.String({ description: "Working directory to resolve the repository from." })),
+	noVerify: Type.Optional(Type.Boolean({ description: "Allow git commit --no-verify." })),
+});
 
 export default function (pi: ExtensionAPI) {
-	pi.registerCommand("commit", {
-		description: "Review git changes and commit in an isolated subagent",
-		getArgumentCompletions: (prefix) => {
-			const options = [{ value: "--no-verify", label: "--no-verify" }];
-			const filtered = options.filter((option) => option.value.startsWith(prefix));
-			return filtered.length > 0 ? filtered : null;
-		},
-		handler: async (args, ctx) => {
-			await ctx.waitForIdle();
-
-			const repoRoot = await runGit(pi, ["rev-parse", "--show-toplevel"], ctx.cwd);
+	pi.registerTool({
+		name: COMMIT_TOOL_NAME,
+		label: "Commit Subagent",
+		description: "Run the /commit workflow inside an isolated pi subagent and stream progress.",
+		parameters: CommitToolParams,
+		async execute(_toolCallId, params, _signal, onUpdate, ctx) {
+			const startCwd = params.cwd || ctx.cwd;
+			const repoRoot = await runGit(pi, ["rev-parse", "--show-toplevel"], startCwd);
 			if (repoRoot.code !== 0 || !repoRoot.stdout.trim()) {
-				if (ctx.hasUI) ctx.ui.notify("The current directory is not a git repository.", "error");
-				return;
+				return {
+					content: [{ type: "text", text: "Not a git repository." }],
+					details: {
+						phase: "done",
+						repoCwd: startCwd,
+						branch: "(unknown)",
+						headBefore: null,
+						headAfter: null,
+						outcome: "failed",
+						outcomeLine: "Not a git repository.",
+						commitSubject: null,
+						entries: [{ kind: "stderr", text: "Not a git repository." }],
+						finalOutput: "Not a git repository.",
+						stderr: repoRoot.stderr,
+						toolCalls: [],
+					} satisfies CommitToolDetails,
+					isError: true,
+				};
 			}
 
 			const repoCwd = repoRoot.stdout.trim();
 			const status = await runGit(pi, ["status", "--short"], repoCwd);
 			if (status.code !== 0) {
-				if (ctx.hasUI) ctx.ui.notify("Unable to read git status.", "error");
-				return;
+				return {
+					content: [{ type: "text", text: "Unable to read git status." }],
+					details: {
+						phase: "done",
+						repoCwd,
+						branch: "(unknown)",
+						headBefore: null,
+						headAfter: null,
+						outcome: "failed",
+						outcomeLine: "Unable to read git status.",
+						commitSubject: null,
+						entries: [{ kind: "stderr", text: status.stderr || "Unable to read git status." }],
+						finalOutput: "Unable to read git status.",
+						stderr: status.stderr,
+						toolCalls: [],
+					} satisfies CommitToolDetails,
+					isError: true,
+				};
 			}
 
 			if (!status.stdout.trim()) {
-				if (ctx.hasUI) ctx.ui.notify("There are no uncommitted changes.", "info");
-				return;
+				return {
+					content: [{ type: "text", text: "There are no uncommitted changes." }],
+					details: {
+						phase: "done",
+						repoCwd,
+						branch: "(unknown)",
+						headBefore: null,
+						headAfter: null,
+						outcome: "no-commit",
+						outcomeLine: "There are no uncommitted changes.",
+						commitSubject: null,
+						entries: [{ kind: "status", text: "There are no uncommitted changes." }],
+						finalOutput: "There are no uncommitted changes.",
+						stderr: "",
+						toolCalls: [],
+					} satisfies CommitToolDetails,
+				};
 			}
 
 			const headBefore = getHeadSha(await runGit(pi, ["rev-parse", "--verify", "HEAD"], repoCwd));
-			const noVerify = hasFlag(args, "--no-verify");
+			const noVerify = params.noVerify ?? false;
 
 			const [
 				branch,
@@ -879,106 +725,117 @@ ${
 Untracked file previews:
 ${untrackedPreviews.length > 0 ? untrackedPreviews.join("\n\n") : "(none)"}${omittedUntrackedCount > 0 ? `\n\n[${omittedUntrackedCount} additional untracked file(s) omitted from preview]` : ""}`;
 
-			if (!ctx.hasUI) {
-				const { result } = await startCommitSubagent(prompt, repoCwd);
-				await result;
-				return;
-			}
+			const details: CommitToolDetails = {
+				phase: "running",
+				repoCwd,
+				branch: branch.stdout.trim() || "(unknown)",
+				headBefore,
+				headAfter: headBefore,
+				entries: [{ kind: "status", text: "Launching isolated commit subagent..." }],
+				finalOutput: "",
+				stderr: "",
+				toolCalls: [],
+			};
+			const pushUpdate = () => {
+				onUpdate?.({ content: [{ type: "text", text: details.entries.at(-1)?.text || "Running /commit..." }], details });
+			};
+			pushUpdate();
 
-			ctx.ui.notify("Launching /commit in an isolated subagent...", "info");
-			ctx.ui.setStatus("commit-subagent", "Running /commit in isolated subagent...");
+			const { result } = await startCommitSubagent(prompt, repoCwd, {
+				onStatus: (text) => {
+					details.entries = [...details.entries, { kind: "status", text }];
+					pushUpdate();
+				},
+				onToolCall: (toolCall) => {
+					details.toolCalls = [...details.toolCalls, toolCall];
+					details.entries = [...details.entries, { kind: "tool", text: formatCommitToolCallText(toolCall) }];
+					pushUpdate();
+				},
+				onAssistantText: (text) => {
+					details.entries = [...details.entries, { kind: "text", text: shorten(text.replace(/\s+/g, " ").trim(), 220) }];
+					pushUpdate();
+				},
+				onStderr: (text) => {
+					const nextEntries = text
+						.split(/\r?\n/)
+						.map((line) => line.trim())
+						.filter(Boolean)
+						.map((line) => ({ kind: "stderr", text: line }) as CommitStreamEntry);
+					details.entries = [...details.entries, ...nextEntries];
+					details.stderr = `${details.stderr}${text}`;
+					pushUpdate();
+				},
+			});
 
-			let viewer!: CommitResultViewer;
-			const uiPromise = ctx.ui.custom<void>(
-				(tui, theme, _keybindings, done) => {
-					viewer = new CommitResultViewer(
-						tui,
-						theme,
-						repoCwd,
-						branch.stdout.trim() || "(unknown)",
-						headBefore,
-						() => done(),
-					);
-					return viewer;
-				},
-				{
-					overlay: true,
-					overlayOptions: {
-						anchor: "center",
-						width: "85%",
-						maxHeight: "85%",
-						margin: 1,
-					},
-				},
+			const subagentResult = await result;
+			const headAfter = getHeadSha(await runGit(pi, ["rev-parse", "--verify", "HEAD"], repoCwd));
+			const createdCommit = headAfter !== null && headAfter !== headBefore;
+			const isError =
+				subagentResult.exitCode !== 0 ||
+				subagentResult.stopReason === "error" ||
+				subagentResult.stopReason === "aborted";
+			const outcome: CommitOutcome = isError ? "failed" : createdCommit ? "committed" : "no-commit";
+			const commitSubjectResult = createdCommit ? await runGit(pi, ["log", "-1", "--format=%s", headAfter!], repoCwd) : null;
+			const commitSubject = commitSubjectResult && commitSubjectResult.code === 0 ? commitSubjectResult.stdout.trim() : null;
+			const finalText = subagentResult.finalOutput || subagentResult.errorMessage || subagentResult.stderr || "(no output)";
+
+			details.phase = "done";
+			details.headAfter = headAfter;
+			details.outcome = outcome;
+			details.outcomeLine = getOutcomeLine(finalText);
+			details.commitSubject = commitSubject;
+			details.finalOutput = finalText;
+			details.stderr = subagentResult.stderr;
+			details.toolCalls = subagentResult.toolCalls;
+			pushUpdate();
+
+			return {
+				content: [{ type: "text", text: finalText }],
+				details,
+				isError: outcome === "failed",
+			};
+		},
+		renderCall(args, theme) {
+			const cwd = typeof args.cwd === "string" ? args.cwd : ".";
+			const noVerify = args.noVerify === true ? theme.fg("warning", " --no-verify") : "";
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold("commit-subagent "))}${theme.fg("accent", cwd)}${noVerify}`,
+				0,
+				0,
 			);
-
-			try {
-				const { result, abort } = await startCommitSubagent(prompt, repoCwd, {
-					onStatus: (text) => viewer?.pushStatus(text),
-					onToolCall: (toolCall) => viewer?.pushToolCall(toolCall),
-					onAssistantText: (text) => viewer?.pushAssistantText(text),
-					onStderr: (text) => viewer?.pushStderr(text),
-				});
-				viewer.setAbort(abort);
-
-				const subagentResult = await result;
-				const headAfter = getHeadSha(await runGit(pi, ["rev-parse", "--verify", "HEAD"], repoCwd));
-				const createdCommit = headAfter !== null && headAfter !== headBefore;
-				const isError =
-					subagentResult.exitCode !== 0 ||
-					subagentResult.stopReason === "error" ||
-					subagentResult.stopReason === "aborted";
-				const outcome: CommitOutcome = isError ? "failed" : createdCommit ? "committed" : "no-commit";
-				const commitSubjectResult = createdCommit
-					? await runGit(pi, ["log", "-1", "--format=%s", headAfter!], repoCwd)
-					: null;
-				const commitSubject = commitSubjectResult && commitSubjectResult.code === 0 ? commitSubjectResult.stdout.trim() : null;
-				const finalText = subagentResult.finalOutput || subagentResult.errorMessage || subagentResult.stderr || "(no output)";
-				viewer.finish({
-					outcome,
-					outcomeLine: getOutcomeLine(finalText),
-					repoCwd,
-					branch: branch.stdout.trim() || "(unknown)",
-					headBefore,
-					headAfter,
-					commitSubject,
-					finalOutput: finalText,
-					stderr: subagentResult.stderr,
-					toolCalls: subagentResult.toolCalls,
-				});
-				await uiPromise;
-				return;
-			} catch (error) {
-				viewer.finish({
-					outcome: "failed",
-					outcomeLine: error instanceof Error ? error.message : String(error),
-					repoCwd,
-					branch: branch.stdout.trim() || "(unknown)",
-					headBefore,
-					headAfter: headBefore,
-					commitSubject: null,
-					finalOutput: error instanceof Error ? error.message : String(error),
-					stderr: "",
-					toolCalls: [],
-				});
-				await uiPromise;
-				return;
-			} finally {
-				ctx.ui.setStatus("commit-subagent", undefined);
+		},
+		renderResult(result, options, theme) {
+			const details = result.details as CommitToolDetails | undefined;
+			if (!details) {
+				const text = result.content[0];
+				return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
 			}
+			return renderCommitToolResult(details, options, theme);
+		},
+	});
+
+	pi.registerCommand("commit", {
+		description: "Run the commit workflow in an isolated subagent tool",
+		getArgumentCompletions: (prefix) => {
+			const options = [{ value: "--no-verify", label: "--no-verify" }];
+			const filtered = options.filter((option) => option.value.startsWith(prefix));
+			return filtered.length > 0 ? filtered : null;
+		},
+		handler: async (args, ctx) => {
+			await ctx.waitForIdle();
+			const noVerify = hasFlag(args, "--no-verify");
+			pi.sendUserMessage(
+				`Use the ${COMMIT_TOOL_NAME} tool now with cwd: ${JSON.stringify(ctx.cwd)} and noVerify: ${noVerify}. This tool already performs the full /commit workflow inside an isolated subagent, so do not inspect the repository yourself before calling it. After the tool finishes, briefly report the outcome in one sentence.`,
+			);
 		},
 	});
 
 	pi.on("tool_call", async (event) => {
 		if (!isToolCallEventType("bash", event)) return;
-
 		const command = event.input.command?.trim() ?? "";
 
 		if (matchesGitPushCommand(command)) {
-			return {
-				block: true,
-				reason: "git push is disabled by the commit extension.",
-			};
+			return { block: true, reason: "git push is disabled by the commit extension." };
 		}
 
 		if (matchesGitCommitCommand(command)) {
