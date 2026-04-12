@@ -1,5 +1,8 @@
-import { readFile, stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
@@ -17,6 +20,14 @@ type DiffSummary = {
 	hasBinary: boolean;
 };
 
+type CommitSubagentResult = {
+	exitCode: number;
+	stderr: string;
+	finalOutput: string;
+	stopReason?: string;
+	errorMessage?: string;
+};
+
 const GIT_TIMEOUT_MS = 30_000;
 const MAX_INLINE_DIFF_CHARS = 16_000;
 const MAX_INLINE_DIFF_FILES = 3;
@@ -24,10 +35,13 @@ const MAX_INLINE_DIFF_LINES = 150;
 const MAX_UNTRACKED_FILES = 5;
 const MAX_UNTRACKED_FILE_BYTES = 64_000;
 const MAX_UNTRACKED_FILE_CHARS = 4_000;
+const SUBAGENT_NOTIFICATION_CHARS = 180;
+const COMMIT_SUBAGENT_TOOLS = ["bash", "read", "edit", "write"];
 
-async function runGit(pi: ExtensionAPI, args: string[]): Promise<GitResult> {
+async function runGit(pi: ExtensionAPI, args: string[], cwd?: string): Promise<GitResult> {
 	try {
-		const result = await pi.exec("git", args, { timeout: GIT_TIMEOUT_MS });
+		const gitArgs = cwd ? ["-C", cwd, ...args] : args;
+		const result = await pi.exec("git", gitArgs, { timeout: GIT_TIMEOUT_MS });
 		return {
 			stdout: result.stdout ?? "",
 			stderr: result.stderr ?? "",
@@ -45,6 +59,13 @@ async function runGit(pi: ExtensionAPI, args: string[]): Promise<GitResult> {
 function clip(text: string, maxChars = MAX_INLINE_DIFF_CHARS): string {
 	if (text.length <= maxChars) return text;
 	return `${text.slice(0, maxChars)}\n\n[truncated]`;
+}
+
+function clipNotification(text: string, maxChars = SUBAGENT_NOTIFICATION_CHARS): string {
+	const oneLine = text.replace(/\s+/g, " ").trim();
+	if (!oneLine) return "";
+	if (oneLine.length <= maxChars) return oneLine;
+	return `${oneLine.slice(0, maxChars - 1)}…`;
 }
 
 function hasFlag(args: string | undefined, flag: string): boolean {
@@ -138,6 +159,123 @@ function shouldInlineDiff(params: {
 	);
 }
 
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	if (currentScript && existsSync(currentScript)) {
+		return { command: process.execPath, args: [currentScript, ...args] };
+	}
+
+	const execName = basename(process.execPath).toLowerCase();
+	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+	if (!isGenericRuntime) {
+		return { command: process.execPath, args };
+	}
+
+	return { command: "pi", args };
+}
+
+async function writeTempPromptFile(content: string): Promise<{ dir: string; filePath: string }> {
+	const dir = await mkdtemp(join(tmpdir(), "pi-commit-subagent-"));
+	const filePath = join(dir, "commit-workflow.md");
+	await writeFile(filePath, content, { encoding: "utf8", mode: 0o600 });
+	return { dir, filePath };
+}
+
+function extractAssistantText(message: any): string {
+	if (!message || !Array.isArray(message.content)) return "";
+
+	const parts = message.content
+		.filter((part: any) => part?.type === "text" && typeof part.text === "string")
+		.map((part: any) => part.text.trim())
+		.filter(Boolean);
+
+	return parts.join("\n\n").trim();
+}
+
+async function runCommitSubagent(prompt: string, cwd: string): Promise<CommitSubagentResult> {
+	const tempPrompt = await writeTempPromptFile(prompt);
+	const args = [
+		"--mode",
+		"json",
+		"-p",
+		"--no-session",
+		"--tools",
+		COMMIT_SUBAGENT_TOOLS.join(","),
+		"--append-system-prompt",
+		tempPrompt.filePath,
+		"Complete the /commit workflow now using the appended git context. Inspect files or run targeted diffs when needed, then either create one focused commit or explain why no commit should be made.",
+	];
+
+	try {
+		return await new Promise<CommitSubagentResult>((resolvePromise) => {
+			const invocation = getPiInvocation(args);
+			const proc = spawn(invocation.command, invocation.args, {
+				cwd,
+				shell: false,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+
+			let buffer = "";
+			let stderr = "";
+			let finalOutput = "";
+			let stopReason: string | undefined;
+			let errorMessage: string | undefined;
+
+			const processLine = (line: string) => {
+				if (!line.trim()) return;
+
+				let event: any;
+				try {
+					event = JSON.parse(line);
+				} catch {
+					return;
+				}
+
+				if (event.type === "message_end" && event.message?.role === "assistant") {
+					const text = extractAssistantText(event.message);
+					if (text) finalOutput = text;
+					if (typeof event.message.stopReason === "string") stopReason = event.message.stopReason;
+					if (typeof event.message.errorMessage === "string") errorMessage = event.message.errorMessage;
+				}
+			};
+
+			proc.stdout.on("data", (data) => {
+				buffer += data.toString();
+				const lines = buffer.split("\n");
+				buffer = lines.pop() || "";
+				for (const line of lines) processLine(line);
+			});
+
+			proc.stderr.on("data", (data) => {
+				stderr += data.toString();
+			});
+
+			proc.on("close", (code) => {
+				if (buffer.trim()) processLine(buffer);
+				resolvePromise({
+					exitCode: code ?? 1,
+					stderr: stderr.trim(),
+					finalOutput,
+					stopReason,
+					errorMessage,
+				});
+			});
+
+			proc.on("error", (error) => {
+				resolvePromise({
+					exitCode: 1,
+					stderr: error instanceof Error ? error.message : String(error),
+					finalOutput,
+					stopReason,
+					errorMessage,
+				});
+			});
+		});
+	} finally {
+		await rm(tempPrompt.dir, { recursive: true, force: true });
+	}
+}
+
 function looksBinary(buffer: Buffer): boolean {
 	const sample = buffer.subarray(0, Math.min(buffer.length, 8_000));
 	return sample.includes(0);
@@ -176,9 +314,14 @@ async function buildUntrackedPreview(cwd: string, relativePath: string): Promise
 	return `File: ${relativePath}\n\n\`\`\`\n${content}\n\`\`\``;
 }
 
+function getHeadSha(result: GitResult): string | null {
+	const value = result.stdout.trim();
+	return result.code === 0 && value ? value : null;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("commit", {
-		description: "Review git changes and commit when appropriate",
+		description: "Review git changes and commit in an isolated subagent",
 		getArgumentCompletions: (prefix) => {
 			const options = [{ value: "--no-verify", label: "--no-verify" }];
 			const filtered = options.filter((option) => option.value.startsWith(prefix));
@@ -187,9 +330,16 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			await ctx.waitForIdle();
 
-			const status = await runGit(pi, ["status", "--short"]);
-			if (status.code !== 0) {
+			const repoRoot = await runGit(pi, ["rev-parse", "--show-toplevel"], ctx.cwd);
+			if (repoRoot.code !== 0 || !repoRoot.stdout.trim()) {
 				if (ctx.hasUI) ctx.ui.notify("The current directory is not a git repository.", "error");
+				return;
+			}
+
+			const repoCwd = repoRoot.stdout.trim();
+			const status = await runGit(pi, ["status", "--short"], repoCwd);
+			if (status.code !== 0) {
+				if (ctx.hasUI) ctx.ui.notify("Unable to read git status.", "error");
 				return;
 			}
 
@@ -198,6 +348,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			const headBefore = getHeadSha(await runGit(pi, ["rev-parse", "--verify", "HEAD"], repoCwd));
 			const noVerify = hasFlag(args, "--no-verify");
 
 			const [
@@ -211,15 +362,15 @@ export default function (pi: ExtensionAPI) {
 				unstagedNumstat,
 				untrackedFilesResult,
 			] = await Promise.all([
-				runGit(pi, ["branch", "--show-current"]),
-				runGit(pi, ["log", "--oneline", "-10"]),
-				runGit(pi, ["diff", "--cached", "--stat"]),
-				runGit(pi, ["diff", "--stat"]),
-				runGit(pi, ["diff", "--cached", "--name-only", "-z"]),
-				runGit(pi, ["diff", "--name-only", "-z"]),
-				runGit(pi, ["diff", "--cached", "--numstat"]),
-				runGit(pi, ["diff", "--numstat"]),
-				runGit(pi, ["ls-files", "--others", "--exclude-standard", "-z"]),
+				runGit(pi, ["branch", "--show-current"], repoCwd),
+				runGit(pi, ["log", "--oneline", "-10"], repoCwd),
+				runGit(pi, ["diff", "--cached", "--stat"], repoCwd),
+				runGit(pi, ["diff", "--stat"], repoCwd),
+				runGit(pi, ["diff", "--cached", "--name-only", "-z"], repoCwd),
+				runGit(pi, ["diff", "--name-only", "-z"], repoCwd),
+				runGit(pi, ["diff", "--cached", "--numstat"], repoCwd),
+				runGit(pi, ["diff", "--numstat"], repoCwd),
+				runGit(pi, ["ls-files", "--others", "--exclude-standard", "-z"], repoCwd),
 			]);
 
 			const stagedFiles = uniqueSorted(parseNullSeparated(stagedFilesResult.stdout));
@@ -250,18 +401,18 @@ export default function (pi: ExtensionAPI) {
 
 			if (inlineDiffIncluded) {
 				const [stagedDiff, unstagedDiff] = await Promise.all([
-					runGit(pi, ["diff", "--cached"]),
-					runGit(pi, ["diff"]),
+					runGit(pi, ["diff", "--cached"], repoCwd),
+					runGit(pi, ["diff"], repoCwd),
 				]);
 				stagedDiffText = clip(stagedDiff.stdout.trim() || "(empty)");
 				unstagedDiffText = clip(unstagedDiff.stdout.trim() || "(empty)");
 			}
 
 			const previewTargets = untrackedFiles.slice(0, MAX_UNTRACKED_FILES);
-			const untrackedPreviews = await Promise.all(previewTargets.map((file) => buildUntrackedPreview(ctx.cwd, file)));
+			const untrackedPreviews = await Promise.all(previewTargets.map((file) => buildUntrackedPreview(repoCwd, file)));
 			const omittedUntrackedCount = Math.max(0, untrackedFiles.length - previewTargets.length);
 
-			const prompt = `You are running the /commit workflow in pi.
+			const prompt = `You are running the /commit workflow in pi inside an isolated subagent.
 
 Goals:
 1. Review the current git changes.
@@ -270,7 +421,7 @@ Goals:
 4. If nothing is staged, stage the files that belong in the recommended commit.
 5. When the changes are suitable for a single focused commit, write a commit message that matches the repository's recent style and run git commit.
 6. Do not push.
-7. After committing, report what you staged and the final commit message.
+7. After finishing, report what you staged and the final commit message.
 
 Rules:
 - Prefer a single focused commit when appropriate.
@@ -282,8 +433,15 @@ Rules:
 - If the summary is not enough, inspect the changed files or run targeted git diff commands before committing.
 - If a single focused commit is appropriate, do not ask follow-up questions or wait for approval; stage the files and run git commit in the same turn.
 - Never run git push.
+- Start your final response with one concise outcome line suitable for a notification, for example:
+  - Committed: <commit message>
+  - No commit: <reason>
+  - Failed: <reason>
 
 Git context:
+
+Repository root:
+${repoCwd}
 
 Branch:
 ${branch.stdout.trim() || "(unknown)"}
@@ -329,8 +487,44 @@ ${
 Untracked file previews:
 ${untrackedPreviews.length > 0 ? untrackedPreviews.join("\n\n") : "(none)"}${omittedUntrackedCount > 0 ? `\n\n[${omittedUntrackedCount} additional untracked file(s) omitted from preview]` : ""}`;
 
-			if (ctx.hasUI) ctx.ui.notify("Collected summarized git context for /commit.", "info");
-			pi.sendUserMessage(prompt);
+			if (ctx.hasUI) ctx.ui.notify("Launching /commit in an isolated subagent...", "info");
+
+			const subagentResult = await runCommitSubagent(prompt, repoCwd);
+			const headAfter = getHeadSha(await runGit(pi, ["rev-parse", "--verify", "HEAD"], repoCwd));
+			const createdCommit = headAfter !== null && headAfter !== headBefore;
+			const summary = clipNotification(
+				subagentResult.finalOutput || subagentResult.errorMessage || subagentResult.stderr || "(no output)"
+			);
+			const isError =
+				subagentResult.exitCode !== 0 ||
+				subagentResult.stopReason === "error" ||
+				subagentResult.stopReason === "aborted";
+
+			if (!ctx.hasUI) {
+				return;
+			}
+
+			if (isError) {
+				ctx.ui.notify(summary ? `Commit subagent failed: ${summary}` : "Commit subagent failed.", "error");
+				return;
+			}
+
+			if (createdCommit) {
+				ctx.ui.notify(
+					summary
+						? `Created commit ${headAfter.slice(0, 7)}. ${summary}`
+						: `Created commit ${headAfter.slice(0, 7)}.`,
+					"success",
+				);
+				return;
+			}
+
+			ctx.ui.notify(
+				summary
+					? `Commit subagent finished without creating a commit. ${summary}`
+					: "Commit subagent finished without creating a commit.",
+				"info",
+			);
 		},
 	});
 
