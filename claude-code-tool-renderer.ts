@@ -1,17 +1,35 @@
 import {
 	AssistantMessageComponent,
-	type BashToolDetails,
-	createBashTool,
-	createEditTool,
-	createReadTool,
-	createWriteTool,
-	type EditToolDetails,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 	type ExtensionAPI,
-	type ReadToolDetails,
 	ToolExecutionComponent,
+	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { Box, Markdown, Text, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
+
+type AnyToolDefinition = ToolDefinition<any, any>;
+
+type ThemeLike = {
+	fg: (color: string, text: string) => string;
+	toolTitle: (text: string) => string;
+};
+
+const PARTIAL_LABELS: Record<string, string> = {
+	read: "Reading...",
+	bash: "Running...",
+	edit: "Applying edits...",
+	write: "Writing...",
+	grep: "Searching...",
+	find: "Finding...",
+	ls: "Listing...",
+};
 
 function toDisplayPath(path: string | undefined, cwd: string): string {
 	if (!path) return "...";
@@ -31,9 +49,9 @@ function truncate(text: string, max: number): string {
 }
 
 function buildTitle(theme: any, label: string, target?: string): string {
-	const bullet = theme.fg("accent", "●");
-	if (!target) return `${bullet} ${theme.fg("toolTitle", label)}`;
-	return `${bullet} ${theme.fg("toolTitle", `${label}(`)}${theme.fg("text", target)}${theme.fg("toolTitle", `)`)}`;
+	const bullet = theme.fg("accent", "● ");
+	if (!target) return `${bullet}${theme.fg("toolTitle", label)}`;
+	return `${bullet}${theme.fg("toolTitle", `${label}(`)}${theme.fg("text", target)}${theme.fg("toolTitle", `)`)}`;
 }
 
 function buildBlock(firstLine: string, previewLines: string[] = []): string {
@@ -78,6 +96,163 @@ function trimLeadingBlankLines(lines: string[]): string[] {
 	let start = 0;
 	while (start < lines.length && isBlankLine(lines[start] ?? "")) start++;
 	return lines.slice(start);
+}
+
+function getTextContent(result: { content?: Array<{ type: string; text?: string }> }): string {
+	return result.content?.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n") ?? "";
+}
+
+function getLines(text: string): string[] {
+	return text === "" ? [] : text.split("\n");
+}
+
+function getNonEmptyLines(text: string): string[] {
+	return getLines(text).filter((line) => line.trim().length > 0);
+}
+
+function getToolLabel(name: string): string {
+	switch (name) {
+		case "ls":
+			return "Ls";
+		default:
+			return name.charAt(0).toUpperCase() + name.slice(1);
+	}
+}
+
+function getToolTarget(name: string, args: any, cwd: string): string | undefined {
+	switch (name) {
+		case "bash":
+			return truncate(singleLine(args.command ?? ""), 72);
+		case "read":
+		case "write":
+		case "edit":
+		case "ls":
+			return toDisplayPath(args.path, cwd);
+		case "grep":
+			return truncate(singleLine(args.pattern ?? args.query ?? ""), 72);
+		case "find":
+			return truncate(singleLine(args.pattern ?? args.path ?? ""), 72);
+		default:
+			return undefined;
+	}
+}
+
+function formatExpandedPreview(lines: string[], limit: number, theme: any): string[] {
+	const preview = lines.slice(0, limit).map((line) => theme.fg("muted", line));
+	if (lines.length > limit) {
+		preview.push(theme.fg("dim", `... +${lines.length - limit} lines (ctrl+o to expand)`));
+	}
+	return preview;
+}
+
+function summarizeToolResult(name: string, args: any, result: any, theme: any, cwd: string, expanded: boolean) {
+	const text = getTextContent(result);
+	const lines = getLines(text);
+	const nonEmptyLines = getNonEmptyLines(text);
+
+	switch (name) {
+		case "read": {
+			const image = result.content?.find((item: any) => item.type === "image");
+			if (image) {
+				return {
+					firstLine: `Loaded image from ${toDisplayPath(args.path, cwd)}`,
+					preview: [],
+				};
+			}
+			let firstLine = `Read ${lines.length} lines from ${toDisplayPath(args.path, cwd)}`;
+			if (result.details?.truncation?.truncated) {
+				firstLine += ` (truncated from ${result.details.truncation.totalLines} lines)`;
+			}
+			return {
+				firstLine,
+				preview: expanded ? formatExpandedPreview(lines, 14, theme) : [],
+			};
+		}
+
+		case "bash": {
+			const exitMatch = text.match(/exit code: (\d+)/i);
+			const exitCode = exitMatch ? Number.parseInt(exitMatch[1]!, 10) : 0;
+			let firstLine = exitCode === 0 ? "Command finished" : `Command exited with code ${exitCode}`;
+			if (result.details?.truncation?.truncated) firstLine += " (truncated)";
+			const preview = expanded
+				? formatExpandedPreview(lines, 18, theme)
+				: nonEmptyLines.slice(0, 1).map((line) => theme.fg("muted", truncate(line, 120)));
+			return { firstLine, preview };
+		}
+
+		case "edit": {
+			if (!result.details?.diff) {
+				return {
+					firstLine: singleLine(text) || `Updated ${toDisplayPath(args.path, cwd)}`,
+					preview: [],
+				};
+			}
+			const { additions, removals, lines: diffLines } = summarizeDiff(result.details.diff);
+			return {
+				firstLine: `${toDisplayPath(args.path, cwd)} updated (+${additions} / -${removals})`,
+				preview: expanded
+					? diffLines.slice(0, 24).map((line) => {
+						if (line.startsWith("+") && !line.startsWith("+++")) return theme.fg("success", line);
+						if (line.startsWith("-") && !line.startsWith("---")) return theme.fg("error", line);
+						return theme.fg("muted", line);
+					})
+					: [],
+			};
+		}
+
+		case "write": {
+			const contentLines = String(args.content ?? "").split("\n");
+			const firstLine = singleLine(text) || `Wrote ${contentLines.length} lines to ${toDisplayPath(args.path, cwd)}`;
+			return {
+				firstLine,
+				preview: expanded
+					? contentLines.slice(0, 16).map((line, index) => theme.fg("muted", `${index + 1} ${line}`))
+					: [],
+			};
+		}
+
+		case "grep":
+			return {
+				firstLine: `Found ${nonEmptyLines.length} matching lines`,
+				preview: expanded ? formatExpandedPreview(lines, 18, theme) : [],
+			};
+
+		case "find":
+			return {
+				firstLine: `Found ${nonEmptyLines.length} paths`,
+				preview: expanded ? formatExpandedPreview(lines, 18, theme) : [],
+			};
+
+		case "ls":
+			return {
+				firstLine: `Listed ${nonEmptyLines.length} entries in ${toDisplayPath(args.path, cwd)}`,
+				preview: expanded ? formatExpandedPreview(lines, 18, theme) : [],
+			};
+
+		default:
+			return {
+				firstLine: singleLine(text) || "Done",
+				preview: expanded ? formatExpandedPreview(lines, 18, theme) : [],
+			};
+	}
+}
+
+function decorateTool(definition: AnyToolDefinition): AnyToolDefinition {
+	return {
+		...definition,
+		renderCall(args, theme, context) {
+			return new Text(buildTitle(theme, getToolLabel(definition.name), getToolTarget(definition.name, args, context.cwd)), 0, 0);
+		},
+		renderResult(result, options, theme, context) {
+			if (options.isPartial) {
+				return new Text(theme.fg("muted", buildBlock(PARTIAL_LABELS[definition.name] ?? "Working...")), 0, 0);
+			}
+
+			const summary = summarizeToolResult(definition.name, context.args, result, theme, context.cwd, options.expanded);
+			const color = context.isError ? "error" : "muted";
+			return new Text(buildBlock(theme.fg(color, summary.firstLine), summary.preview), 0, 0);
+		},
+	};
 }
 
 function hasVisibleAssistantContent(message: any): boolean {
@@ -187,129 +362,17 @@ export default function (pi: ExtensionAPI) {
 	patchToolSpacing();
 	patchAssistantReplies();
 
-	const readTool = createReadTool(cwd);
-	pi.registerTool({
-		...readTool,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return readTool.execute(toolCallId, params, signal, onUpdate, ctx);
-		},
-		renderCall(args, theme, context) {
-			return new Text(buildTitle(theme, "Read", toDisplayPath(args.path, context.cwd)), 0, 0);
-		},
-		renderResult(result, options, theme, context) {
-			if (options.isPartial) return new Text(theme.fg("muted", buildBlock("Reading...")), 0, 0);
+	const builtInDefinitions = [
+		createReadToolDefinition(cwd),
+		createBashToolDefinition(cwd),
+		createEditToolDefinition(cwd),
+		createWriteToolDefinition(cwd),
+		createGrepToolDefinition(cwd),
+		createFindToolDefinition(cwd),
+		createLsToolDefinition(cwd),
+	];
 
-			const details = result.details as ReadToolDetails | undefined;
-			const content = result.content[0];
-			if (!content) return new Text(theme.fg("muted", buildBlock("No output")), 0, 0);
-
-			if (content.type === "image") {
-				return new Text(theme.fg("muted", buildBlock(`Loaded image from ${toDisplayPath(context.args.path, context.cwd)}`)), 0, 0);
-			}
-
-			const lines = content.text.split("\n");
-			let firstLine = `Read ${lines.length} lines from ${toDisplayPath(context.args.path, context.cwd)}`;
-			if (details?.truncation?.truncated) {
-				firstLine += ` (truncated from ${details.truncation.totalLines} lines)`;
-			}
-
-			const preview = options.expanded ? lines.slice(0, 14).map((line) => theme.fg("muted", line)) : [];
-			if (options.expanded && lines.length > 14) {
-				preview.push(theme.fg("dim", `... +${lines.length - 14} lines (ctrl+o to expand)`));
-			}
-			return new Text(buildBlock(theme.fg("muted", firstLine), preview), 0, 0);
-		},
-	});
-
-	const bashTool = createBashTool(cwd);
-	pi.registerTool({
-		...bashTool,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return bashTool.execute(toolCallId, params, signal, onUpdate, ctx);
-		},
-		renderCall(args, theme) {
-			return new Text(buildTitle(theme, "Bash", truncate(singleLine(args.command), 72)), 0, 0);
-		},
-		renderResult(result, options, theme) {
-			if (options.isPartial) return new Text(theme.fg("muted", buildBlock("Running...")), 0, 0);
-
-			const details = result.details as BashToolDetails | undefined;
-			const output = result.content.find((item) => item.type === "text")?.text ?? "";
-			const lines = output.split("\n");
-			const exitMatch = output.match(/exit code: (\d+)/i);
-			const exitCode = exitMatch ? Number.parseInt(exitMatch[1]!, 10) : 0;
-			let firstLine = exitCode === 0 ? "Command finished" : `Command exited with code ${exitCode}`;
-			if (details?.truncation?.truncated) firstLine += " (truncated)";
-
-			const preview = options.expanded
-				? lines.slice(0, 18).map((line) => theme.fg("muted", line))
-				: lines.filter((line) => line.trim()).slice(0, 1).map((line) => theme.fg("muted", truncate(line, 120)));
-			if (options.expanded && lines.length > 18) {
-				preview.push(theme.fg("dim", `... +${lines.length - 18} lines (ctrl+o to expand)`));
-			}
-
-			const color = exitCode === 0 ? "muted" : "error";
-			return new Text(buildBlock(theme.fg(color, firstLine), preview), 0, 0);
-		},
-	});
-
-	const editTool = createEditTool(cwd);
-	pi.registerTool({
-		...editTool,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return editTool.execute(toolCallId, params, signal, onUpdate, ctx);
-		},
-		renderCall(args, theme, context) {
-			return new Text(buildTitle(theme, "Edit", toDisplayPath(args.path, context.cwd)), 0, 0);
-		},
-		renderResult(result, options, theme, context) {
-			if (options.isPartial) return new Text(theme.fg("muted", buildBlock("Applying edits...")), 0, 0);
-
-			const details = result.details as EditToolDetails | undefined;
-			if (!details?.diff) {
-				return new Text(buildBlock(theme.fg("muted", `Updated ${toDisplayPath(context.args.path, context.cwd)}`)), 0, 0);
-			}
-
-			const { additions, removals, lines } = summarizeDiff(details.diff);
-			const firstLine = `${toDisplayPath(context.args.path, context.cwd)} updated (+${additions} / -${removals})`;
-			const preview = options.expanded
-				? lines.slice(0, 24).map((line) => {
-					if (line.startsWith("+") && !line.startsWith("+++")) return theme.fg("success", line);
-					if (line.startsWith("-") && !line.startsWith("---")) return theme.fg("error", line);
-					return theme.fg("muted", line);
-				})
-				: [];
-			if (options.expanded && lines.length > 24) {
-				preview.push(theme.fg("dim", `... +${lines.length - 24} diff lines (ctrl+o to expand)`));
-			}
-
-			return new Text(buildBlock(theme.fg("muted", firstLine), preview), 0, 0);
-		},
-	});
-
-	const writeTool = createWriteTool(cwd);
-	pi.registerTool({
-		...writeTool,
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			return writeTool.execute(toolCallId, params, signal, onUpdate, ctx);
-		},
-		renderCall(args, theme, context) {
-			return new Text(buildTitle(theme, "Write", toDisplayPath(args.path, context.cwd)), 0, 0);
-		},
-		renderResult(result, options, theme, context) {
-			if (options.isPartial) return new Text(theme.fg("muted", buildBlock("Writing...")), 0, 0);
-
-			const path = toDisplayPath(context.args.path, context.cwd);
-			const contentLines = context.args.content.split("\n");
-			const resultText = result.content.find((item) => item.type === "text")?.text;
-			const firstLine = resultText ? singleLine(resultText) : `Wrote ${contentLines.length} lines to ${path}`;
-			const preview = options.expanded
-				? contentLines.slice(0, 16).map((line, index) => theme.fg("muted", `${index + 1} ${line}`))
-				: [];
-			if (options.expanded && contentLines.length > 16) {
-				preview.push(theme.fg("dim", `... +${contentLines.length - 16} lines (ctrl+o to expand)`));
-			}
-			return new Text(buildBlock(theme.fg("muted", firstLine), preview), 0, 0);
-		},
-	});
+	for (const definition of builtInDefinitions) {
+		pi.registerTool(decorateTool(definition));
+	}
 }
