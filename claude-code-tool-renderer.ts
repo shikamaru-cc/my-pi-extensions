@@ -255,6 +255,26 @@ function decorateTool(definition: AnyToolDefinition): AnyToolDefinition {
 	};
 }
 
+interface Expandable {
+	setExpanded(expanded: boolean): void;
+}
+
+function isExpandableComponent(obj: unknown): obj is Expandable {
+	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof (obj as any).setExpanded === "function";
+}
+
+function setExpandedRecursive(component: unknown, expanded: boolean): void {
+	if (isExpandableComponent(component)) {
+		(component as any).setExpanded(expanded);
+	}
+	// Penetrate Box/Container wrappers
+	if (typeof component === "object" && component !== null && "children" in component) {
+		for (const child of (component as any).children as unknown[]) {
+			setExpandedRecursive(child, expanded);
+		}
+	}
+}
+
 function hasVisibleAssistantContent(message: any): boolean {
 	return message.content.some(
 		(c: any) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
@@ -297,16 +317,39 @@ class AssistantReplyBlock implements Component {
 	}
 }
 
-class ThinkingLabelBlock implements Component {
-	private label = new Text("", 0, 0);
+function getLastNonEmptyLine(thinking: string): string | null {
+	const lines = thinking.replace(/\r/g, "").split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+	return lines.length > 0 ? lines[lines.length - 1]! : null;
+}
+
+class ThinkingPreviewBlock implements Component {
+	private text = new Text("", 0, 0);
+	private expanded = false;
+
+	constructor(private thinking: string) {}
+
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+	}
 
 	render(width: number): string[] {
-		this.label.setText("\x1b[38;5;245m∴ Thinking…\x1b[39m");
-		return this.label.render(width);
+		if (this.expanded) {
+			const lines = this.thinking
+				.replace(/\r/g, "")
+				.split("\n")
+				.map((line) => `\x1b[38;5;245m  ${line}\x1b[39m`);
+			lines.unshift("\x1b[38;5;245m∴ Thinking\x1b[39m");
+			this.text.setText(lines.join("\n"));
+		} else {
+			const lastLine = getLastNonEmptyLine(this.thinking);
+			const label = lastLine ? `∴ Thinking\n\x1b[38;5;245m  ${lastLine}\x1b[39m` : "∴ Thinking…";
+			this.text.setText(`\x1b[38;5;245m${label}\x1b[39m`);
+		}
+		return this.text.render(width);
 	}
 
 	invalidate(): void {
-		this.label.invalidate?.();
+		this.text.invalidate?.();
 	}
 }
 
@@ -326,15 +369,25 @@ function patchToolSpacing(): void {
 }
 
 function patchAssistantReplies(): void {
-	const proto = AssistantMessageComponent.prototype as AssistantMessageComponent & {
-		__assistantReplyPatched?: boolean;
-		updateContent(message: any): void;
-		contentContainer: { children: Component[] };
-		markdownTheme: ConstructorParameters<typeof Markdown>[3];
-	};
+	const proto = AssistantMessageComponent.prototype as AssistantMessageComponent &
+		Expandable & {
+			__assistantReplyPatched?: boolean;
+			updateContent(message: any): void;
+			contentContainer: { children: Component[] };
+			markdownTheme: ConstructorParameters<typeof Markdown>[3];
+		};
 
 	if (proto.__assistantReplyPatched) return;
 	proto.__assistantReplyPatched = true;
+
+	// Make AssistantMessageComponent expandable so ctrl+o propagates to ThinkingPreviewBlocks
+	proto.setExpanded = function (expanded: boolean): void {
+		const contentContainer = this.contentContainer;
+		if (!contentContainer?.children) return;
+		for (const child of contentContainer.children) {
+			setExpandedRecursive(child, expanded);
+		}
+	};
 
 	const originalUpdateContent = proto.updateContent;
 	proto.updateContent = function (message: any): void {
@@ -362,7 +415,7 @@ function patchAssistantReplies(): void {
 
 			if (content.type === "thinking" && content.thinking.trim()) {
 				const thinkingBox = new Box(1, 0);
-				thinkingBox.addChild(new ThinkingLabelBlock());
+				thinkingBox.addChild(new ThinkingPreviewBlock(content.thinking));
 				contentContainer.children[childIndex] = thinkingBox;
 				childIndex += 1;
 				if (hasVisibleAssistantContentAfter(message, i)) {
