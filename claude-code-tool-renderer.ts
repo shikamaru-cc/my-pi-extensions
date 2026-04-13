@@ -537,6 +537,7 @@ function patchWorkingLoader(): void {
 	if (proto.__workingBlinkPatched) return;
 	proto.__workingBlinkPatched = true;
 
+
 	proto.updateDisplay = function (): void {
 		const breathColors = getLoaderBreathColors(String(this.message ?? ""));
 		const phase = Math.floor(Date.now() / WORKING_BREATH_STEP_MS) % breathColors.length;
@@ -548,6 +549,22 @@ function patchWorkingLoader(): void {
 			this.ui.requestRender();
 		}
 	};
+}
+
+function patchWidgetSpacing(): void {
+	const proto = InteractiveMode.prototype as any;
+	if (proto.__widgetSpacingPatched) return;
+	proto.__widgetSpacingPatched = true;
+
+	const originalRenderWidgets = proto.renderWidgets;
+	if (typeof originalRenderWidgets === "function") {
+		proto.renderWidgets = function (): void {
+			if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
+			this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true, true);
+			this.renderWidgetContainer(this.widgetContainerBelow, this.extensionWidgetsBelow, false, false);
+			this.ui.requestRender();
+		};
+	}
 }
 
 function patchTextPadding(): void {
@@ -641,6 +658,7 @@ export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 	patchStatusLines();
 	patchWorkingLoader();
+	patchWidgetSpacing();
 	patchTextPadding();
 	patchEditorPrompt();
 	patchUserMessages();
