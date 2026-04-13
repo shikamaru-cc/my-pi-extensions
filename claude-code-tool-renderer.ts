@@ -297,6 +297,19 @@ class AssistantReplyBlock implements Component {
 	}
 }
 
+class ThinkingLabelBlock implements Component {
+	private label = new Text("", 0, 0);
+
+	render(width: number): string[] {
+		this.label.setText("\x1b[38;5;245m∴ Thinking…\x1b[39m");
+		return this.label.render(width);
+	}
+
+	invalidate(): void {
+		this.label.invalidate?.();
+	}
+}
+
 function patchToolSpacing(): void {
 	const proto = ToolExecutionComponent.prototype as ToolExecutionComponent & {
 		__compactToolSpacingPatched?: boolean;
@@ -348,6 +361,9 @@ function patchAssistantReplies(): void {
 			}
 
 			if (content.type === "thinking" && content.thinking.trim()) {
+				const thinkingBox = new Box(1, 0);
+				thinkingBox.addChild(new ThinkingLabelBlock());
+				contentContainer.children[childIndex] = thinkingBox;
 				childIndex += 1;
 				if (hasVisibleAssistantContentAfter(message, i)) {
 					childIndex += 1;
