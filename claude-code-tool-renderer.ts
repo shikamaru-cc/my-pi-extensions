@@ -357,10 +357,23 @@ function patchToolSpacing(): void {
 	const proto = ToolExecutionComponent.prototype as ToolExecutionComponent & {
 		__compactToolSpacingPatched?: boolean;
 		render(width: number): string[];
+		updateDisplay(): void;
+		contentBox: any;
+		contentText: any;
 	};
 
 	if (proto.__compactToolSpacingPatched) return;
 	proto.__compactToolSpacingPatched = true;
+
+	// Patch updateDisplay: zero out Box padding + remove background
+	const originalUpdateDisplay = proto.updateDisplay;
+	proto.updateDisplay = function (): void {
+		this.contentBox.paddingX = 0;
+		this.contentBox.paddingY = 0;
+		originalUpdateDisplay.call(this);
+		this.contentBox.setBgFn(undefined);
+		this.contentText.setCustomBgFn(undefined);
+	};
 
 	const originalRender = proto.render;
 	proto.render = function (width: number): string[] {
@@ -403,20 +416,14 @@ function patchAssistantReplies(): void {
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
-				const replyBox = new Box(1, 0);
-				replyBox.addChild(
-					new AssistantReplyBlock(new Markdown(content.text.trim(), 0, 0, this.markdownTheme), !usedBullet),
-				);
-				contentContainer.children[childIndex] = replyBox;
+				contentContainer.children[childIndex] = new AssistantReplyBlock(new Markdown(content.text.trim(), 0, 0, this.markdownTheme), !usedBullet);
 				usedBullet = true;
 				childIndex += 1;
 				continue;
 			}
 
 			if (content.type === "thinking" && content.thinking.trim()) {
-				const thinkingBox = new Box(1, 0);
-				thinkingBox.addChild(new ThinkingPreviewBlock(content.thinking));
-				contentContainer.children[childIndex] = thinkingBox;
+				contentContainer.children[childIndex] = new ThinkingPreviewBlock(content.thinking);
 				childIndex += 1;
 				if (hasVisibleAssistantContentAfter(message, i)) {
 					childIndex += 1;
