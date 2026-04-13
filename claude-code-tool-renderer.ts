@@ -25,9 +25,10 @@ type ThemeLike = {
 
 const THINKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const WORKING_PREFIX = "※";
-const LOADER_BREATH_PERIOD_MS = 1800;
-const LOADER_BREATH_MIN_RGB = { r: 150, g: 52, b: 52 };
-const LOADER_BREATH_MAX_RGB = { r: 255, g: 110, b: 110 };
+const LOADER_BREATH_PERIOD_MS = 2400;
+const LOADER_COLOR_UPDATE_INTERVAL_MS = 200;
+const LOADER_BREATH_MIN_RGB = { r: 170, g: 68, b: 68 };
+const LOADER_BREATH_MAX_RGB = { r: 230, g: 108, b: 108 };
 let thinkingSpinnerFrame = 0;
 let thinkingSpinnerTimer: NodeJS.Timeout | undefined;
 let activeUiRequestRender: (() => void) | undefined;
@@ -529,8 +530,9 @@ function lerp(start: number, end: number, t: number): number {
 }
 
 function getLoaderBreathColor(): { r: number; g: number; b: number } {
-	const phase = ((Date.now() % LOADER_BREATH_PERIOD_MS) / LOADER_BREATH_PERIOD_MS) * Math.PI * 2;
-	const eased = (Math.sin(phase) + 1) / 2;
+	const now = Math.floor(Date.now() / LOADER_COLOR_UPDATE_INTERVAL_MS) * LOADER_COLOR_UPDATE_INTERVAL_MS;
+	const phase = ((now % LOADER_BREATH_PERIOD_MS) / LOADER_BREATH_PERIOD_MS) * Math.PI * 2;
+	const eased = (Math.sin(phase - Math.PI / 2) + 1) / 2;
 	return {
 		r: Math.round(lerp(LOADER_BREATH_MIN_RGB.r, LOADER_BREATH_MAX_RGB.r, eased)),
 		g: Math.round(lerp(LOADER_BREATH_MIN_RGB.g, LOADER_BREATH_MAX_RGB.g, eased)),
@@ -544,15 +546,16 @@ function rgb(text: string, color: { r: number; g: number; b: number }): string {
 
 function patchWorkingLoader(): void {
 	const proto = Loader.prototype as any;
-	if (proto.__workingBlinkPatched) return;
-	proto.__workingBlinkPatched = true;
-
+	if (proto.__loaderPatched) return;
+	proto.__loaderPatched = true;
 
 	proto.updateDisplay = function (): void {
 		const color = getLoaderBreathColor();
 		const prefix = rgb(WORKING_PREFIX, color);
 		const message = rgb(String(this.message ?? ""), color);
-		this.setText(`${prefix} ${message}`);
+		const nextText = `${prefix} ${message}`;
+		if (this.text === nextText) return;
+		this.setText(nextText);
 		if (this.ui) {
 			this.ui.requestRender();
 		}
@@ -564,8 +567,7 @@ function patchWidgetSpacing(): void {
 	if (proto.__widgetSpacingPatched) return;
 	proto.__widgetSpacingPatched = true;
 
-	const originalRenderWidgets = proto.renderWidgets;
-	if (typeof originalRenderWidgets === "function") {
+	if (typeof proto.renderWidgets === "function") {
 		proto.renderWidgets = function (): void {
 			if (!this.widgetContainerAbove || !this.widgetContainerBelow) return;
 			this.renderWidgetContainer(this.widgetContainerAbove, this.extensionWidgetsAbove, true, true);
