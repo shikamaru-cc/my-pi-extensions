@@ -336,25 +336,30 @@ class AssistantReplyBlock implements Component {
 class ThinkingTitleBlock implements Component {
 	private title = new Text("\x1b[38;5;245m∴ Thinking\x1b[39m", 0, 0);
 
-	constructor(private child: Component) {}
+	constructor(
+		private child?: Component,
+		private bodySpacing = true,
+	) {}
 
 	render(width: number): string[] {
+		const titleLines = this.title.render(width);
+		if (!this.child) return titleLines;
 		const innerWidth = Math.max(1, width - 2);
 		const bodyLines = this.child.render(innerWidth).map((line) => {
 			if (isBlankLine(line)) return "";
 			const normalizedLine = line.startsWith(" ") ? line.slice(1) : line;
 			return `  ${normalizedLine}`;
 		});
-		return [...this.title.render(width), "", ...bodyLines];
+		return this.bodySpacing ? [...titleLines, "", ...bodyLines] : [...titleLines, ...bodyLines];
 	}
 
 	invalidate(): void {
 		this.title.invalidate?.();
-		this.child.invalidate?.();
+		this.child?.invalidate?.();
 	}
 
 	handleInput?(data: string): void {
-		this.child.handleInput?.(data);
+		this.child?.handleInput?.(data);
 	}
 }
 
@@ -428,6 +433,15 @@ function patchAssistantReplies(): void {
 			}
 
 			if (content.type === "thinking" && content.thinking.trim()) {
+				if (this.hideThinkingBlock) {
+					contentContainer.children[childIndex] = new ThinkingTitleBlock();
+					childIndex += 1;
+					if (hasVisibleAssistantContentAfter(message, i)) {
+						childIndex += 1;
+					}
+					continue;
+				}
+
 				const originalChild = contentContainer.children[childIndex];
 				if (originalChild) {
 					contentContainer.children[childIndex] = new ThinkingTitleBlock(originalChild);
