@@ -332,40 +332,28 @@ class AssistantReplyBlock implements Component {
 	}
 }
 
-function getLastNonEmptyLine(thinking: string): string | null {
-	const lines = thinking.replace(/\r/g, "").split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-	return lines.length > 0 ? lines[lines.length - 1]! : null;
-}
+class ThinkingTitleBlock implements Component {
+	private title = new Text("\x1b[38;5;245m∴ Thinking\x1b[39m", 0, 0);
 
-class ThinkingPreviewBlock implements Component {
-	private text = new Text("", 0, 0);
-	private expanded = false;
-
-	constructor(private thinking: string) {}
-
-	setExpanded(expanded: boolean): void {
-		this.expanded = expanded;
-	}
+	constructor(private child: Component) {}
 
 	render(width: number): string[] {
-		if (this.expanded) {
-			const bodyLines = this.thinking
-				.replace(/\r/g, "")
-				.split("\n")
-				.map((line) => `\x1b[38;5;245m  ${line}\x1b[39m`);
-			this.text.setText(["\x1b[38;5;245m∴ Thinking\x1b[39m", "", ...bodyLines].join("\n"));
-		} else {
-			const lastLine = getLastNonEmptyLine(this.thinking);
-			const lines = lastLine
-				? ["\x1b[38;5;245m∴ Thinking\x1b[39m", "", `\x1b[38;5;245m  ${lastLine}\x1b[39m`]
-				: ["\x1b[38;5;245m∴ Thinking…\x1b[39m"];
-			this.text.setText(lines.join("\n"));
-		}
-		return this.text.render(width);
+		const innerWidth = Math.max(1, width - 2);
+		const bodyLines = this.child.render(innerWidth).map((line) => {
+			if (isBlankLine(line)) return "";
+			const normalizedLine = line.startsWith(" ") ? line.slice(1) : line;
+			return `  ${normalizedLine}`;
+		});
+		return [...this.title.render(width), "", ...bodyLines];
 	}
 
 	invalidate(): void {
-		this.text.invalidate?.();
+		this.title.invalidate?.();
+		this.child.invalidate?.();
+	}
+
+	handleInput?(data: string): void {
+		this.child.handleInput?.(data);
 	}
 }
 
@@ -439,7 +427,10 @@ function patchAssistantReplies(): void {
 			}
 
 			if (content.type === "thinking" && content.thinking.trim()) {
-				contentContainer.children[childIndex] = new ThinkingPreviewBlock(content.thinking);
+				const originalChild = contentContainer.children[childIndex];
+				if (originalChild) {
+					contentContainer.children[childIndex] = new ThinkingTitleBlock(originalChild);
+				}
 				childIndex += 1;
 				if (hasVisibleAssistantContentAfter(message, i)) {
 					childIndex += 1;
