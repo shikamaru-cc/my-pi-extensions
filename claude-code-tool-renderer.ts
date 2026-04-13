@@ -11,7 +11,7 @@ import {
 	ToolExecutionComponent,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import { Box, Markdown, Text, type Component } from "@mariozechner/pi-tui";
+import { Box, Editor, Markdown, Text, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
 
 type AnyToolDefinition = ToolDefinition<any, any>;
@@ -445,9 +445,41 @@ function patchTextPadding(): void {
 	};
 }
 
+function patchEditorPrompt(): void {
+	const proto = Editor.prototype as any;
+	if (proto.__editorPromptPatched) return;
+	proto.__editorPromptPatched = true;
+
+	const origRender = proto.render;
+	proto.render = function (width: number): string[] {
+		const promptWidth = 2;
+		const innerWidth = Math.max(1, width - promptWidth);
+		const lines = origRender.call(this, innerWidth) as string[];
+		if (!Array.isArray(lines) || lines.length < 3) return lines;
+
+		let autocompleteLineCount = 0;
+		if (this.autocompleteState && this.autocompleteList) {
+			try {
+				autocompleteLineCount = this.autocompleteList.render(innerWidth).length;
+			} catch {
+				autocompleteLineCount = 0;
+			}
+		}
+
+		const bottomBorderIndex = Math.max(1, lines.length - autocompleteLineCount - 1);
+		const top = `${lines[0] ?? ""}${" ".repeat(promptWidth)}`;
+		const bottom = `${lines[bottomBorderIndex] ?? ""}${" ".repeat(promptWidth)}`;
+		const contentLines = lines.slice(1, bottomBorderIndex).map((line, index) => `${index === 0 ? "> " : "  "}${line}`);
+		const autocompleteLines = lines.slice(bottomBorderIndex + 1).map((line) => `${" ".repeat(promptWidth)}${line}`);
+
+		return [top, ...contentLines, bottom, ...autocompleteLines];
+	};
+}
+
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 	patchTextPadding();
+	patchEditorPrompt();
 	patchToolSpacing();
 	patchAssistantReplies();
 
