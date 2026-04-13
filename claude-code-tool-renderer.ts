@@ -1,4 +1,5 @@
 import {
+	AssistantMessageComponent,
 	type BashToolDetails,
 	createBashTool,
 	createEditTool,
@@ -9,7 +10,7 @@ import {
 	type ReadToolDetails,
 	ToolExecutionComponent,
 } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { Markdown, Text, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
 
 function toDisplayPath(path: string | undefined, cwd: string): string {
@@ -73,6 +74,54 @@ function trimBlankEdges(lines: string[]): string[] {
 	return trimmed;
 }
 
+function trimLeadingBlankLines(lines: string[]): string[] {
+	let start = 0;
+	while (start < lines.length && isBlankLine(lines[start] ?? "")) start++;
+	return lines.slice(start);
+}
+
+function hasVisibleAssistantContent(message: any): boolean {
+	return message.content.some(
+		(c: any) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
+	);
+}
+
+function hasVisibleAssistantContentAfter(message: any, index: number): boolean {
+	return message.content
+		.slice(index + 1)
+		.some((c: any) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
+}
+
+class AssistantReplyBlock implements Component {
+	constructor(
+		private child: Component,
+		private showBullet: boolean,
+	) {}
+
+	render(width: number): string[] {
+		const innerWidth = Math.max(1, width - 2);
+		const lines = trimLeadingBlankLines(this.child.render(innerWidth));
+		let seenFirstVisible = false;
+		const rendered = lines.map((line) => {
+			if (!seenFirstVisible && !isBlankLine(line)) {
+				seenFirstVisible = true;
+				return `${this.showBullet ? "● " : "  "}${line}`;
+			}
+			if (!seenFirstVisible) return line;
+			return isBlankLine(line) ? "" : `  ${line}`;
+		});
+		return rendered;
+	}
+
+	invalidate(): void {
+		this.child.invalidate?.();
+	}
+
+	handleInput?(data: string): void {
+		this.child.handleInput?.(data);
+	}
+}
+
 function patchToolSpacing(): void {
 	const proto = ToolExecutionComponent.prototype as ToolExecutionComponent & {
 		__compactToolSpacingPatched?: boolean;
@@ -88,9 +137,54 @@ function patchToolSpacing(): void {
 	};
 }
 
+function patchAssistantReplies(): void {
+	const proto = AssistantMessageComponent.prototype as AssistantMessageComponent & {
+		__assistantReplyPatched?: boolean;
+		updateContent(message: any): void;
+		contentContainer: { children: Component[] };
+		markdownTheme: ConstructorParameters<typeof Markdown>[3];
+	};
+
+	if (proto.__assistantReplyPatched) return;
+	proto.__assistantReplyPatched = true;
+
+	const originalUpdateContent = proto.updateContent;
+	proto.updateContent = function (message: any): void {
+		originalUpdateContent.call(this, message);
+
+		const contentContainer = this.contentContainer;
+		if (!contentContainer?.children) return;
+		if (!hasVisibleAssistantContent(message)) return;
+
+		let childIndex = 1; // Original component inserts a leading Spacer(1)
+		let usedBullet = false;
+
+		for (let i = 0; i < message.content.length; i++) {
+			const content = message.content[i];
+			if (content.type === "text" && content.text.trim()) {
+				contentContainer.children[childIndex] = new AssistantReplyBlock(
+					new Markdown(content.text.trim(), 0, 0, this.markdownTheme),
+					!usedBullet,
+				);
+				usedBullet = true;
+				childIndex += 1;
+				continue;
+			}
+
+			if (content.type === "thinking" && content.thinking.trim()) {
+				childIndex += 1;
+				if (hasVisibleAssistantContentAfter(message, i)) {
+					childIndex += 1;
+				}
+			}
+		}
+	};
+}
+
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 	patchToolSpacing();
+	patchAssistantReplies();
 
 	const readTool = createReadTool(cwd);
 	pi.registerTool({
