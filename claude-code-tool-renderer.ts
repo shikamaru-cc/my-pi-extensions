@@ -1,6 +1,7 @@
 import {
 	AssistantMessageComponent,
 	createBashToolDefinition,
+	InteractiveMode,
 	UserMessageComponent,
 	createEditToolDefinition,
 	createFindToolDefinition,
@@ -12,7 +13,7 @@ import {
 	ToolExecutionComponent,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import { Box, Editor, Markdown, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
+import { Box, Editor, Markdown, Spacer, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
 
 type AnyToolDefinition = ToolDefinition<any, any>;
@@ -440,6 +441,34 @@ function patchAssistantReplies(): void {
 	};
 }
 
+function patchStatusLines(): void {
+	const proto = InteractiveMode.prototype as any;
+	if (proto.__statusLinePatched) return;
+	proto.__statusLinePatched = true;
+
+	proto.showStatus = function (message: string): void {
+		const children = this.chatContainer.children;
+		const last = children.length > 0 ? children[children.length - 1] : undefined;
+		const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
+		const formatted = `↺ ${message}`;
+		const textValue = `\x1b[38;5;245m${formatted}\x1b[39m`;
+
+		if (last && secondLast && last === this.lastStatusText && secondLast === this.lastStatusSpacer) {
+			this.lastStatusText.setText(textValue);
+			this.ui.requestRender();
+			return;
+		}
+
+		const spacer = new Spacer(1);
+		const text = new Text(textValue, 0, 0);
+		this.chatContainer.addChild(spacer);
+		this.chatContainer.addChild(text);
+		this.lastStatusSpacer = spacer;
+		this.lastStatusText = text;
+		this.ui.requestRender();
+	};
+}
+
 function patchTextPadding(): void {
 	const proto = Text.prototype as any;
 	if (proto.__textPaddingPatched) return;
@@ -529,6 +558,7 @@ function patchUserMessages(): void {
 
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
+	patchStatusLines();
 	patchTextPadding();
 	patchEditorPrompt();
 	patchUserMessages();
