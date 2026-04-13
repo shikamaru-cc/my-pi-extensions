@@ -26,7 +26,6 @@ type ThemeLike = {
 const THINKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const WORKING_PREFIX = "※";
 const WORKING_BREATH_STEP_MS = 180;
-const WORKING_PREFIX_COLOR = 245;
 const DEFAULT_LOADER_BREATH_COLORS = [250, 249, 248, 247, 246, 247, 248, 249];
 const WORKING_LOADER_BREATH_COLORS = [223, 222, 221, 180, 179, 180, 221, 222];
 const RETRY_LOADER_BREATH_COLORS = [210, 209, 203, 196, 203, 209, 210, 209];
@@ -542,7 +541,7 @@ function patchWorkingLoader(): void {
 		const breathColors = getLoaderBreathColors(String(this.message ?? ""));
 		const phase = Math.floor(Date.now() / WORKING_BREATH_STEP_MS) % breathColors.length;
 		const color = breathColors[phase] ?? breathColors[0]!;
-		const prefix = `\x1b[38;5;${WORKING_PREFIX_COLOR}m${WORKING_PREFIX}\x1b[39m`;
+		const prefix = `\x1b[38;5;${color}m${WORKING_PREFIX}\x1b[39m`;
 		const message = `\x1b[38;5;${color}m${this.message}\x1b[39m`;
 		this.setText(`${prefix} ${message}`);
 		if (this.ui) {
