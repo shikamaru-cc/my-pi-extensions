@@ -23,6 +23,11 @@ type ThemeLike = {
 	toolTitle: (text: string) => string;
 };
 
+const THINKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let thinkingSpinnerFrame = 0;
+let thinkingSpinnerTimer: NodeJS.Timeout | undefined;
+let activeUiRequestRender: (() => void) | undefined;
+
 const PARTIAL_LABELS: Record<string, string> = {
 	read: "Reading...",
 	bash: "Running...",
@@ -334,14 +339,19 @@ class AssistantReplyBlock implements Component {
 }
 
 class ThinkingTitleBlock implements Component {
-	private title = new Text("\x1b[38;5;245m∴ Thinking\x1b[39m", 0, 0);
+	private title = new Text("", 0, 0);
 
 	constructor(
 		private child?: Component,
 		private bodySpacing = true,
-	) {}
+		private animateSpinner = false,
+	) {
+		if (this.animateSpinner) ensureThinkingSpinner();
+	}
 
 	render(width: number): string[] {
+		const prefix = this.animateSpinner ? (THINKING_SPINNER_FRAMES[thinkingSpinnerFrame] ?? THINKING_SPINNER_FRAMES[0]!) : "✓";
+		this.title.setText(`\x1b[38;5;245m${prefix} Thinking\x1b[39m`);
 		const titleLines = this.title.render(width);
 		if (!this.child) return titleLines;
 		const innerWidth = Math.max(1, width - 2);
@@ -361,6 +371,14 @@ class ThinkingTitleBlock implements Component {
 	handleInput?(data: string): void {
 		this.child?.handleInput?.(data);
 	}
+}
+
+function ensureThinkingSpinner(): void {
+	if (thinkingSpinnerTimer) return;
+	thinkingSpinnerTimer = setInterval(() => {
+		thinkingSpinnerFrame = (thinkingSpinnerFrame + 1) % THINKING_SPINNER_FRAMES.length;
+		activeUiRequestRender?.();
+	}, 80);
 }
 
 function patchToolSpacing(): void {
@@ -434,7 +452,7 @@ function patchAssistantReplies(): void {
 
 			if (content.type === "thinking" && content.thinking.trim()) {
 				if (this.hideThinkingBlock) {
-					contentContainer.children[childIndex] = new ThinkingTitleBlock();
+					contentContainer.children[childIndex] = new ThinkingTitleBlock(undefined, true, (this as any).__animateThinkingSpinner === true);
 					childIndex += 1;
 					if (hasVisibleAssistantContentAfter(message, i)) {
 						childIndex += 1;
@@ -444,7 +462,7 @@ function patchAssistantReplies(): void {
 
 				const originalChild = contentContainer.children[childIndex];
 				if (originalChild) {
-					contentContainer.children[childIndex] = new ThinkingTitleBlock(originalChild);
+					contentContainer.children[childIndex] = new ThinkingTitleBlock(originalChild, true, (this as any).__animateThinkingSpinner === true);
 				}
 				childIndex += 1;
 				if (hasVisibleAssistantContentAfter(message, i)) {
@@ -460,7 +478,26 @@ function patchStatusLines(): void {
 	if (proto.__statusLinePatched) return;
 	proto.__statusLinePatched = true;
 
+	const streamingComponentKey = Symbol.for("claudeCode.streamingComponent");
+		Object.defineProperty(proto, "streamingComponent", {
+			get() {
+				return this[streamingComponentKey];
+			},
+			set(value) {
+				const previous = this[streamingComponentKey];
+				if (previous) previous.__animateThinkingSpinner = false;
+				this[streamingComponentKey] = value;
+				if (value) {
+					value.__animateThinkingSpinner = true;
+					activeUiRequestRender = () => this.ui.requestRender();
+				}
+			},
+			configurable: true,
+			enumerable: true,
+		});
+
 	proto.showStatus = function (message: string): void {
+		activeUiRequestRender = () => this.ui.requestRender();
 		const children = this.chatContainer.children;
 		const last = children.length > 0 ? children[children.length - 1] : undefined;
 		const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
