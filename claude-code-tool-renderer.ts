@@ -349,16 +349,17 @@ class ThinkingPreviewBlock implements Component {
 
 	render(width: number): string[] {
 		if (this.expanded) {
-			const lines = this.thinking
+			const bodyLines = this.thinking
 				.replace(/\r/g, "")
 				.split("\n")
 				.map((line) => `\x1b[38;5;245m  ${line}\x1b[39m`);
-			lines.unshift("\x1b[38;5;245m∴ Thinking\x1b[39m");
-			this.text.setText(lines.join("\n"));
+			this.text.setText(["\x1b[38;5;245m∴ Thinking\x1b[39m", "", ...bodyLines].join("\n"));
 		} else {
 			const lastLine = getLastNonEmptyLine(this.thinking);
-			const label = lastLine ? `∴ Thinking\n\x1b[38;5;245m  ${lastLine}\x1b[39m` : "∴ Thinking…";
-			this.text.setText(`\x1b[38;5;245m${label}\x1b[39m`);
+			const lines = lastLine
+				? ["\x1b[38;5;245m∴ Thinking\x1b[39m", "", `\x1b[38;5;245m  ${lastLine}\x1b[39m`]
+				: ["\x1b[38;5;245m∴ Thinking…\x1b[39m"];
+			this.text.setText(lines.join("\n"));
 		}
 		return this.text.render(width);
 	}
