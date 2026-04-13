@@ -25,10 +25,9 @@ type ThemeLike = {
 
 const THINKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const WORKING_PREFIX = "※";
-const WORKING_BREATH_STEP_MS = 180;
-const DEFAULT_LOADER_BREATH_COLORS = [250, 249, 248, 247, 246, 247, 248, 249];
-const WORKING_LOADER_BREATH_COLORS = [223, 222, 221, 180, 179, 180, 221, 222];
-const RETRY_LOADER_BREATH_COLORS = [210, 209, 203, 196, 203, 209, 210, 209];
+const LOADER_BREATH_PERIOD_MS = 1800;
+const LOADER_BREATH_MIN_RGB = { r: 150, g: 52, b: 52 };
+const LOADER_BREATH_MAX_RGB = { r: 255, g: 110, b: 110 };
 let thinkingSpinnerFrame = 0;
 let thinkingSpinnerTimer: NodeJS.Timeout | undefined;
 let activeUiRequestRender: (() => void) | undefined;
@@ -525,10 +524,22 @@ function patchStatusLines(): void {
 	};
 }
 
-function getLoaderBreathColors(message: string): readonly number[] {
-	if (/retry/i.test(message)) return RETRY_LOADER_BREATH_COLORS;
-	if (/working/i.test(message)) return WORKING_LOADER_BREATH_COLORS;
-	return DEFAULT_LOADER_BREATH_COLORS;
+function lerp(start: number, end: number, t: number): number {
+	return start + (end - start) * t;
+}
+
+function getLoaderBreathColor(): { r: number; g: number; b: number } {
+	const phase = ((Date.now() % LOADER_BREATH_PERIOD_MS) / LOADER_BREATH_PERIOD_MS) * Math.PI * 2;
+	const eased = (Math.sin(phase) + 1) / 2;
+	return {
+		r: Math.round(lerp(LOADER_BREATH_MIN_RGB.r, LOADER_BREATH_MAX_RGB.r, eased)),
+		g: Math.round(lerp(LOADER_BREATH_MIN_RGB.g, LOADER_BREATH_MAX_RGB.g, eased)),
+		b: Math.round(lerp(LOADER_BREATH_MIN_RGB.b, LOADER_BREATH_MAX_RGB.b, eased)),
+	};
+}
+
+function rgb(text: string, color: { r: number; g: number; b: number }): string {
+	return `\x1b[38;2;${color.r};${color.g};${color.b}m${text}\x1b[39m`;
 }
 
 function patchWorkingLoader(): void {
@@ -538,11 +549,9 @@ function patchWorkingLoader(): void {
 
 
 	proto.updateDisplay = function (): void {
-		const breathColors = getLoaderBreathColors(String(this.message ?? ""));
-		const phase = Math.floor(Date.now() / WORKING_BREATH_STEP_MS) % breathColors.length;
-		const color = breathColors[phase] ?? breathColors[0]!;
-		const prefix = `\x1b[38;5;${color}m${WORKING_PREFIX}\x1b[39m`;
-		const message = `\x1b[38;5;${color}m${this.message}\x1b[39m`;
+		const color = getLoaderBreathColor();
+		const prefix = rgb(WORKING_PREFIX, color);
+		const message = rgb(String(this.message ?? ""), color);
 		this.setText(`${prefix} ${message}`);
 		if (this.ui) {
 			this.ui.requestRender();
