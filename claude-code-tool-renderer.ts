@@ -13,7 +13,7 @@ import {
 	ToolExecutionComponent,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import { Box, Editor, Markdown, Spacer, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
+import { Box, Editor, Loader, Markdown, Spacer, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
 
 type AnyToolDefinition = ToolDefinition<any, any>;
@@ -24,6 +24,12 @@ type ThemeLike = {
 };
 
 const THINKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const WORKING_PREFIX = "※";
+const WORKING_BREATH_STEP_MS = 180;
+const WORKING_PREFIX_COLOR = 245;
+const DEFAULT_LOADER_BREATH_COLORS = [250, 249, 248, 247, 246, 247, 248, 249];
+const WORKING_LOADER_BREATH_COLORS = [223, 222, 221, 180, 179, 180, 221, 222];
+const RETRY_LOADER_BREATH_COLORS = [210, 209, 203, 196, 203, 209, 210, 209];
 let thinkingSpinnerFrame = 0;
 let thinkingSpinnerTimer: NodeJS.Timeout | undefined;
 let activeUiRequestRender: (() => void) | undefined;
@@ -520,6 +526,30 @@ function patchStatusLines(): void {
 	};
 }
 
+function getLoaderBreathColors(message: string): readonly number[] {
+	if (/retry/i.test(message)) return RETRY_LOADER_BREATH_COLORS;
+	if (/working/i.test(message)) return WORKING_LOADER_BREATH_COLORS;
+	return DEFAULT_LOADER_BREATH_COLORS;
+}
+
+function patchWorkingLoader(): void {
+	const proto = Loader.prototype as any;
+	if (proto.__workingBlinkPatched) return;
+	proto.__workingBlinkPatched = true;
+
+	proto.updateDisplay = function (): void {
+		const breathColors = getLoaderBreathColors(String(this.message ?? ""));
+		const phase = Math.floor(Date.now() / WORKING_BREATH_STEP_MS) % breathColors.length;
+		const color = breathColors[phase] ?? breathColors[0]!;
+		const prefix = `\x1b[38;5;${WORKING_PREFIX_COLOR}m${WORKING_PREFIX}\x1b[39m`;
+		const message = `\x1b[38;5;${color}m${this.message}\x1b[39m`;
+		this.setText(`${prefix} ${message}`);
+		if (this.ui) {
+			this.ui.requestRender();
+		}
+	};
+}
+
 function patchTextPadding(): void {
 	const proto = Text.prototype as any;
 	if (proto.__textPaddingPatched) return;
@@ -610,6 +640,7 @@ function patchUserMessages(): void {
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 	patchStatusLines();
+	patchWorkingLoader();
 	patchTextPadding();
 	patchEditorPrompt();
 	patchUserMessages();
