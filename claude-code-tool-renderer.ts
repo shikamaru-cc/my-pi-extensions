@@ -10,7 +10,7 @@ import {
 	type ReadToolDetails,
 	ToolExecutionComponent,
 } from "@mariozechner/pi-coding-agent";
-import { Markdown, Text, type Component } from "@mariozechner/pi-tui";
+import { Box, Markdown, Text, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
 
 function toDisplayPath(path: string | undefined, cwd: string): string {
@@ -162,10 +162,11 @@ function patchAssistantReplies(): void {
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
-				contentContainer.children[childIndex] = new AssistantReplyBlock(
-					new Markdown(content.text.trim(), 0, 0, this.markdownTheme),
-					!usedBullet,
+				const replyBox = new Box(1, 0);
+				replyBox.addChild(
+					new AssistantReplyBlock(new Markdown(content.text.trim(), 0, 0, this.markdownTheme), !usedBullet),
 				);
+				contentContainer.children[childIndex] = replyBox;
 				usedBullet = true;
 				childIndex += 1;
 				continue;
