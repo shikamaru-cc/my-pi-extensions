@@ -1,6 +1,7 @@
 import {
 	AssistantMessageComponent,
 	createBashToolDefinition,
+	UserMessageComponent,
 	createEditToolDefinition,
 	createFindToolDefinition,
 	createGrepToolDefinition,
@@ -11,7 +12,7 @@ import {
 	ToolExecutionComponent,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import { Box, Editor, Markdown, Text, type Component } from "@mariozechner/pi-tui";
+import { Box, Editor, Markdown, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
 
 type AnyToolDefinition = ToolDefinition<any, any>;
@@ -96,6 +97,20 @@ function trimLeadingBlankLines(lines: string[]): string[] {
 	let start = 0;
 	while (start < lines.length && isBlankLine(lines[start] ?? "")) start++;
 	return lines.slice(start);
+}
+
+function trimAllBlankEdges(lines: string[]): string[] {
+	let start = 0;
+	let end = lines.length;
+	while (start < end && isBlankLine(lines[start] ?? "")) start++;
+	while (end > start && isBlankLine(lines[end - 1] ?? "")) end--;
+	return lines.slice(start, end);
+}
+
+function applyBackgroundToFullLine(line: string, width: number, bgColor?: (text: string) => string): string {
+	if (!bgColor) return line;
+	const paddingNeeded = Math.max(0, width - visibleWidth(line));
+	return bgColor(line + " ".repeat(paddingNeeded));
 }
 
 function getTextContent(result: { content?: Array<{ type: string; text?: string }> }): string {
@@ -467,8 +482,9 @@ function patchEditorPrompt(): void {
 		}
 
 		const bottomBorderIndex = Math.max(1, lines.length - autocompleteLineCount - 1);
-		const top = `${lines[0] ?? ""}${" ".repeat(promptWidth)}`;
-		const bottom = `${lines[bottomBorderIndex] ?? ""}${" ".repeat(promptWidth)}`;
+		const borderSuffix = this.borderColor?.("─".repeat(promptWidth)) ?? "─".repeat(promptWidth);
+		const top = `${lines[0] ?? ""}${borderSuffix}`;
+		const bottom = `${lines[bottomBorderIndex] ?? ""}${borderSuffix}`;
 		const contentLines = lines.slice(1, bottomBorderIndex).map((line, index) => `${index === 0 ? "> " : "  "}${line}`);
 		const autocompleteLines = lines.slice(bottomBorderIndex + 1).map((line) => `${" ".repeat(promptWidth)}${line}`);
 
@@ -476,10 +492,54 @@ function patchEditorPrompt(): void {
 	};
 }
 
+function patchUserMessages(): void {
+	const proto = UserMessageComponent.prototype as UserMessageComponent & {
+		__userMessagePatched?: boolean;
+		children: Component[];
+		render(width: number): string[];
+	};
+	if (proto.__userMessagePatched) return;
+	proto.__userMessagePatched = true;
+
+	proto.render = function (width: number): string[] {
+		const OSC133_ZONE_START = "\x1b]133;A\x07";
+		const OSC133_ZONE_END = "\x1b]133;B\x07";
+		const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+		const sourceMarkdown = this.children[1] as any;
+		if (!sourceMarkdown) return [];
+
+		const markdownText = String(sourceMarkdown.text ?? "");
+		const markdownTheme = sourceMarkdown.theme;
+		const sourceStyle = sourceMarkdown.defaultTextStyle ?? {};
+		const plainMarkdown = new Markdown(markdownText, 0, 0, markdownTheme, {
+			color: sourceStyle.color,
+			bgColor: sourceStyle.bgColor,
+			bold: sourceStyle.bold,
+			italic: sourceStyle.italic,
+			strikethrough: sourceStyle.strikethrough,
+			underline: sourceStyle.underline,
+		});
+
+		const innerWidth = Math.max(1, width - 2);
+		const rendered = trimAllBlankEdges(plainMarkdown.render(innerWidth));
+		const prefixed = rendered.map((line, index) => {
+			const withPrefix = `${index === 0 ? "> " : "  "}${line}`;
+			return applyBackgroundToFullLine(withPrefix, width, sourceStyle.bgColor);
+		});
+		const result = ["", ...prefixed];
+		if (result.length > 0) {
+			result[0] = OSC133_ZONE_START + result[0];
+			result[result.length - 1] = result[result.length - 1] + OSC133_ZONE_END + OSC133_ZONE_FINAL;
+		}
+		return result;
+	};
+}
+
 export default function (pi: ExtensionAPI) {
 	const cwd = process.cwd();
 	patchTextPadding();
 	patchEditorPrompt();
+	patchUserMessages();
 	patchToolSpacing();
 	patchAssistantReplies();
 
