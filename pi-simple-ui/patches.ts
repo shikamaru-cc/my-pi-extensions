@@ -488,18 +488,6 @@ function patchWidgetSpacing(): void {
 	}
 }
 
-function patchTextPadding(): void {
-	const proto = Text.prototype as any;
-	if (proto.__textPaddingPatched) return;
-	proto.__textPaddingPatched = true;
-
-	const origRender = proto.render;
-	proto.render = function (width: number): string[] {
-		this.paddingX = 0;
-		return origRender.call(this, width);
-	};
-}
-
 function patchEditorPrompt(): void {
 	const proto = Editor.prototype as any;
 	if (proto.__editorPromptPatched) return;
@@ -577,7 +565,6 @@ function patchUserMessages(): void {
 
 export function applySimpleUiPatches(): void {
 	patchWidgetSpacing();
-	patchTextPadding();
 	patchEditorPrompt();
 	patchUserMessages();
 	patchToolSpacing();
