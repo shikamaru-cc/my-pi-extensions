@@ -396,8 +396,6 @@ function patchToolSpacing(): void {
 	// Patch updateDisplay: zero out Box padding + remove background
 	const originalUpdateDisplay = proto.updateDisplay;
 	proto.updateDisplay = function (): void {
-		this.contentBox.paddingX = 0;
-		this.contentBox.paddingY = 0;
 		originalUpdateDisplay.call(this);
 		this.contentBox.setBgFn(undefined);
 		this.contentText.setCustomBgFn(undefined);
