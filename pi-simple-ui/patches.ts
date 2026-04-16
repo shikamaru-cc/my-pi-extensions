@@ -315,16 +315,16 @@ class AssistantReplyBlock implements Component {
 	) {}
 
 	render(width: number): string[] {
-		const innerWidth = Math.max(1, width - 2);
+		const innerWidth = Math.max(1, width - 1);
 		const lines = trimLeadingBlankLines(this.child.render(innerWidth));
 		let seenFirstVisible = false;
 		const rendered = lines.map((line) => {
 			if (!seenFirstVisible && !isBlankLine(line)) {
 				seenFirstVisible = true;
-				return `${this.showBullet ? "● " : "  "}${line}`;
+				return ` ${line}`;
 			}
 			if (!seenFirstVisible) return line;
-			return isBlankLine(line) ? "" : `  ${line}`;
+			return isBlankLine(line) ? "" : ` ${line}`;
 		});
 		return rendered;
 	}
