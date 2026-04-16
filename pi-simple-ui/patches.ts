@@ -1,5 +1,4 @@
 import {
-	AssistantMessageComponent,
 	createBashToolDefinition,
 	InteractiveMode,
 	UserMessageComponent,
@@ -23,10 +22,6 @@ type ThemeLike = {
 	toolTitle: (text: string) => string;
 };
 
-const THINKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-let thinkingSpinnerFrame = 0;
-let thinkingSpinnerTimer: NodeJS.Timeout | undefined;
-let activeUiRequestRender: (() => void) | undefined;
 
 const PARTIAL_LABELS: Record<string, string> = {
 	read: "Reading...",
@@ -99,11 +94,6 @@ function trimBlankEdges(lines: string[]): string[] {
 	return trimmed;
 }
 
-function trimLeadingBlankLines(lines: string[]): string[] {
-	let start = 0;
-	while (start < lines.length && isBlankLine(lines[start] ?? "")) start++;
-	return lines.slice(start);
-}
 
 function trimAllBlankEdges(lines: string[]): string[] {
 	let start = 0;
@@ -276,111 +266,6 @@ function decorateTool(definition: AnyToolDefinition): AnyToolDefinition {
 	};
 }
 
-interface Expandable {
-	setExpanded(expanded: boolean): void;
-}
-
-function isExpandableComponent(obj: unknown): obj is Expandable {
-	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof (obj as any).setExpanded === "function";
-}
-
-function setExpandedRecursive(component: unknown, expanded: boolean): void {
-	if (isExpandableComponent(component)) {
-		(component as any).setExpanded(expanded);
-	}
-	// Penetrate Box/Container wrappers
-	if (typeof component === "object" && component !== null && "children" in component) {
-		for (const child of (component as any).children as unknown[]) {
-			setExpandedRecursive(child, expanded);
-		}
-	}
-}
-
-function hasVisibleAssistantContent(message: any): boolean {
-	return message.content.some(
-		(c: any) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
-	);
-}
-
-function hasVisibleAssistantContentAfter(message: any, index: number): boolean {
-	return message.content
-		.slice(index + 1)
-		.some((c: any) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
-}
-
-class AssistantReplyBlock implements Component {
-	constructor(
-		private child: Component,
-		private showBullet: boolean,
-	) {}
-
-	render(width: number): string[] {
-		const innerWidth = Math.max(1, width - 1);
-		const lines = trimLeadingBlankLines(this.child.render(innerWidth));
-		let seenFirstVisible = false;
-		const rendered = lines.map((line) => {
-			if (!seenFirstVisible && !isBlankLine(line)) {
-				seenFirstVisible = true;
-				return ` ${line}`;
-			}
-			if (!seenFirstVisible) return line;
-			return isBlankLine(line) ? "" : ` ${line}`;
-		});
-		return rendered;
-	}
-
-	invalidate(): void {
-		this.child.invalidate?.();
-	}
-
-	handleInput?(data: string): void {
-		this.child.handleInput?.(data);
-	}
-}
-
-class ThinkingTitleBlock implements Component {
-	private title = new Text("", 0, 0);
-
-	constructor(
-		private child?: Component,
-		private bodySpacing = true,
-		private animateSpinner = false,
-	) {
-		if (this.animateSpinner) ensureThinkingSpinner();
-	}
-
-	render(width: number): string[] {
-		const prefix = this.animateSpinner ? (THINKING_SPINNER_FRAMES[thinkingSpinnerFrame] ?? THINKING_SPINNER_FRAMES[0]!) : "✓";
-		this.title.setText(`\x1b[38;5;245m${prefix} Thinking\x1b[39m`);
-		const titleLines = this.title.render(width);
-		if (!this.child) return titleLines;
-		const innerWidth = Math.max(1, width - 2);
-		const bodyLines = this.child.render(innerWidth).map((line) => {
-			if (isBlankLine(line)) return "";
-			const normalizedLine = line.startsWith(" ") ? line.slice(1) : line;
-			return `  ${normalizedLine}`;
-		});
-		return this.bodySpacing ? [...titleLines, "", ...bodyLines] : [...titleLines, ...bodyLines];
-	}
-
-	invalidate(): void {
-		this.title.invalidate?.();
-		this.child?.invalidate?.();
-	}
-
-	handleInput?(data: string): void {
-		this.child?.handleInput?.(data);
-	}
-}
-
-function ensureThinkingSpinner(): void {
-	if (thinkingSpinnerTimer) return;
-	thinkingSpinnerTimer = setInterval(() => {
-		thinkingSpinnerFrame = (thinkingSpinnerFrame + 1) % THINKING_SPINNER_FRAMES.length;
-		activeUiRequestRender?.();
-	}, 80);
-}
-
 function patchToolSpacing(): void {
 	const proto = ToolExecutionComponent.prototype as ToolExecutionComponent & {
 		__compactToolSpacingPatched?: boolean;
@@ -404,70 +289,6 @@ function patchToolSpacing(): void {
 	const originalRender = proto.render;
 	proto.render = function (width: number): string[] {
 		return trimBlankEdges(originalRender.call(this, width));
-	};
-}
-
-function patchAssistantReplies(): void {
-	const proto = AssistantMessageComponent.prototype as AssistantMessageComponent &
-		Expandable & {
-			__assistantReplyPatched?: boolean;
-			updateContent(message: any): void;
-			contentContainer: { children: Component[] };
-			markdownTheme: ConstructorParameters<typeof Markdown>[3];
-		};
-
-	if (proto.__assistantReplyPatched) return;
-	proto.__assistantReplyPatched = true;
-
-	// Make AssistantMessageComponent expandable so ctrl+o propagates to ThinkingPreviewBlocks
-	proto.setExpanded = function (expanded: boolean): void {
-		const contentContainer = this.contentContainer;
-		if (!contentContainer?.children) return;
-		for (const child of contentContainer.children) {
-			setExpandedRecursive(child, expanded);
-		}
-	};
-
-	const originalUpdateContent = proto.updateContent;
-	proto.updateContent = function (message: any): void {
-		originalUpdateContent.call(this, message);
-
-		const contentContainer = this.contentContainer;
-		if (!contentContainer?.children) return;
-		if (!hasVisibleAssistantContent(message)) return;
-
-		let childIndex = 1; // Original component inserts a leading Spacer(1)
-		let usedBullet = false;
-
-		for (let i = 0; i < message.content.length; i++) {
-			const content = message.content[i];
-			if (content.type === "text" && content.text.trim()) {
-				contentContainer.children[childIndex] = new AssistantReplyBlock(new Markdown(content.text.trim(), 0, 0, this.markdownTheme), !usedBullet);
-				usedBullet = true;
-				childIndex += 1;
-				continue;
-			}
-
-			if (content.type === "thinking" && content.thinking.trim()) {
-				if (this.hideThinkingBlock) {
-					contentContainer.children[childIndex] = new ThinkingTitleBlock(undefined, true, (this as any).__animateThinkingSpinner === true);
-					childIndex += 1;
-					if (hasVisibleAssistantContentAfter(message, i)) {
-						childIndex += 1;
-					}
-					continue;
-				}
-
-				const originalChild = contentContainer.children[childIndex];
-				if (originalChild) {
-					contentContainer.children[childIndex] = new ThinkingTitleBlock(originalChild, true, (this as any).__animateThinkingSpinner === true);
-				}
-				childIndex += 1;
-				if (hasVisibleAssistantContentAfter(message, i)) {
-					childIndex += 1;
-				}
-			}
-		}
 	};
 }
 
@@ -566,5 +387,4 @@ export function applySimpleUiPatches(): void {
 	patchEditorPrompt();
 	patchUserMessages();
 	patchToolSpacing();
-	patchAssistantReplies();
 }
