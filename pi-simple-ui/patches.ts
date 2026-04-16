@@ -367,10 +367,10 @@ function patchUserMessages(): void {
 			underline: sourceStyle.underline,
 		});
 
-		const innerWidth = Math.max(1, width - 2);
+		const innerWidth = Math.max(1, width - 1);
 		const rendered = trimAllBlankEdges(plainMarkdown.render(innerWidth));
-		const prefixed = rendered.map((line, index) => {
-			const withPrefix = `${index === 0 ? "> " : "  "}${line}`;
+		const prefixed = rendered.map((line) => {
+			const withPrefix = ` ${line}`;
 			return applyBackgroundToFullLine(withPrefix, width, sourceStyle.bgColor);
 		});
 		const result = ["", ...prefixed];
