@@ -314,7 +314,7 @@ function patchEditorPrompt(): void {
 
 	const origRender = proto.render;
 	proto.render = function (width: number): string[] {
-		const promptWidth = 2;
+		const promptWidth = 1;
 		const innerWidth = Math.max(1, width - promptWidth);
 		const lines = origRender.call(this, innerWidth) as string[];
 		if (!Array.isArray(lines) || lines.length < 3) return lines;
@@ -332,7 +332,7 @@ function patchEditorPrompt(): void {
 		const borderSuffix = this.borderColor?.("─".repeat(promptWidth)) ?? "─".repeat(promptWidth);
 		const top = `${lines[0] ?? ""}${borderSuffix}`;
 		const bottom = `${lines[bottomBorderIndex] ?? ""}${borderSuffix}`;
-		const contentLines = lines.slice(1, bottomBorderIndex).map((line, index) => `${index === 0 ? "> " : "  "}${line}`);
+		const contentLines = lines.slice(1, bottomBorderIndex).map((line) => ` ${line}`);
 		const autocompleteLines = lines.slice(bottomBorderIndex + 1).map((line) => `${" ".repeat(promptWidth)}${line}`);
 
 		return [top, ...contentLines, bottom, ...autocompleteLines];
