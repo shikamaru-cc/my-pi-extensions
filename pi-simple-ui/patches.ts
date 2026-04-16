@@ -473,53 +473,6 @@ function patchAssistantReplies(): void {
 	};
 }
 
-function patchStatusLines(): void {
-	const proto = InteractiveMode.prototype as any;
-	if (proto.__statusLinePatched) return;
-	proto.__statusLinePatched = true;
-
-	const streamingComponentKey = Symbol.for("claudeCode.streamingComponent");
-		Object.defineProperty(proto, "streamingComponent", {
-			get() {
-				return this[streamingComponentKey];
-			},
-			set(value) {
-				const previous = this[streamingComponentKey];
-				if (previous) previous.__animateThinkingSpinner = false;
-				this[streamingComponentKey] = value;
-				if (value) {
-					value.__animateThinkingSpinner = true;
-					activeUiRequestRender = () => this.ui.requestRender();
-				}
-			},
-			configurable: true,
-			enumerable: true,
-		});
-
-	proto.showStatus = function (message: string): void {
-		activeUiRequestRender = () => this.ui.requestRender();
-		const children = this.chatContainer.children;
-		const last = children.length > 0 ? children[children.length - 1] : undefined;
-		const secondLast = children.length > 1 ? children[children.length - 2] : undefined;
-		const formatted = `↺ ${message}`;
-		const textValue = `\x1b[38;5;245m${formatted}\x1b[39m`;
-
-		if (last && secondLast && last === this.lastStatusText && secondLast === this.lastStatusSpacer) {
-			this.lastStatusText.setText(textValue);
-			this.ui.requestRender();
-			return;
-		}
-
-		const spacer = new Spacer(1);
-		const text = new Text(textValue, 0, 0);
-		this.chatContainer.addChild(spacer);
-		this.chatContainer.addChild(text);
-		this.lastStatusSpacer = spacer;
-		this.lastStatusText = text;
-		this.ui.requestRender();
-	};
-}
-
 function patchWidgetSpacing(): void {
 	const proto = InteractiveMode.prototype as any;
 	if (proto.__widgetSpacingPatched) return;
@@ -623,7 +576,6 @@ function patchUserMessages(): void {
 }
 
 export function applySimpleUiPatches(): void {
-	patchStatusLines();
 	patchWidgetSpacing();
 	patchTextPadding();
 	patchEditorPrompt();
