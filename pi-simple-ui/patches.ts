@@ -13,7 +13,7 @@ import {
 	ToolExecutionComponent,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import { Box, Editor, Loader, Markdown, Spacer, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
+import { Box, Editor, Markdown, Spacer, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
 
 type AnyToolDefinition = ToolDefinition<any, any>;
@@ -24,11 +24,6 @@ type ThemeLike = {
 };
 
 const THINKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const WORKING_PREFIX = "※";
-const LOADER_BREATH_PERIOD_MS = 2400;
-const LOADER_COLOR_UPDATE_INTERVAL_MS = 200;
-const LOADER_BREATH_MIN_RGB = { r: 170, g: 68, b: 68 };
-const LOADER_BREATH_MAX_RGB = { r: 230, g: 108, b: 108 };
 let thinkingSpinnerFrame = 0;
 let thinkingSpinnerTimer: NodeJS.Timeout | undefined;
 let activeUiRequestRender: (() => void) | undefined;
@@ -525,43 +520,6 @@ function patchStatusLines(): void {
 	};
 }
 
-function lerp(start: number, end: number, t: number): number {
-	return start + (end - start) * t;
-}
-
-function getLoaderBreathColor(): { r: number; g: number; b: number } {
-	const now = Math.floor(Date.now() / LOADER_COLOR_UPDATE_INTERVAL_MS) * LOADER_COLOR_UPDATE_INTERVAL_MS;
-	const phase = ((now % LOADER_BREATH_PERIOD_MS) / LOADER_BREATH_PERIOD_MS) * Math.PI * 2;
-	const eased = (Math.sin(phase - Math.PI / 2) + 1) / 2;
-	return {
-		r: Math.round(lerp(LOADER_BREATH_MIN_RGB.r, LOADER_BREATH_MAX_RGB.r, eased)),
-		g: Math.round(lerp(LOADER_BREATH_MIN_RGB.g, LOADER_BREATH_MAX_RGB.g, eased)),
-		b: Math.round(lerp(LOADER_BREATH_MIN_RGB.b, LOADER_BREATH_MAX_RGB.b, eased)),
-	};
-}
-
-function rgb(text: string, color: { r: number; g: number; b: number }): string {
-	return `\x1b[38;2;${color.r};${color.g};${color.b}m${text}\x1b[39m`;
-}
-
-function patchWorkingLoader(): void {
-	const proto = Loader.prototype as any;
-	if (proto.__loaderPatched) return;
-	proto.__loaderPatched = true;
-
-	proto.updateDisplay = function (): void {
-		const color = getLoaderBreathColor();
-		const prefix = rgb(WORKING_PREFIX, color);
-		const message = rgb(String(this.message ?? ""), color);
-		const nextText = `${prefix} ${message}`;
-		if (this.text === nextText) return;
-		this.setText(nextText);
-		if (this.ui) {
-			this.ui.requestRender();
-		}
-	};
-}
-
 function patchWidgetSpacing(): void {
 	const proto = InteractiveMode.prototype as any;
 	if (proto.__widgetSpacingPatched) return;
@@ -666,7 +624,6 @@ function patchUserMessages(): void {
 
 export function applySimpleUiPatches(): void {
 	patchStatusLines();
-	patchWorkingLoader();
 	patchWidgetSpacing();
 	patchTextPadding();
 	patchEditorPrompt();
