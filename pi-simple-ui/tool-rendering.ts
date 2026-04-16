@@ -206,6 +206,7 @@ function summarizeToolResult(name: string, args: any, result: any, theme: any, c
 function decorateTool(definition: AnyToolDefinition): AnyToolDefinition {
 	return {
 		...definition,
+		renderShell: definition.name === "edit" ? "default" : definition.renderShell,
 		renderCall(args, theme, context) {
 			return new Text(buildTitle(theme, getToolLabel(definition.name), getToolTarget(definition.name, args, context.cwd)), 0, 0);
 		},
