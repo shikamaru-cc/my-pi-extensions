@@ -352,15 +352,16 @@ function patchUserMessages(): void {
 		const OSC133_ZONE_START = "\x1b]133;A\x07";
 		const OSC133_ZONE_END = "\x1b]133;B\x07";
 		const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
-		const sourceMarkdown = this.children[1] as any;
+		const contentBox = this.children[0] as any;
+		const sourceMarkdown = contentBox?.children?.[0] ?? this.children[1] as any;
 		if (!sourceMarkdown) return [];
 
 		const markdownText = String(sourceMarkdown.text ?? "");
 		const markdownTheme = sourceMarkdown.theme;
 		const sourceStyle = sourceMarkdown.defaultTextStyle ?? {};
+		const userBgColor = contentBox?.bgFn as ((text: string) => string) | undefined;
 		const plainMarkdown = new Markdown(markdownText, 0, 0, markdownTheme, {
 			color: sourceStyle.color,
-			bgColor: sourceStyle.bgColor,
 			bold: sourceStyle.bold,
 			italic: sourceStyle.italic,
 			strikethrough: sourceStyle.strikethrough,
@@ -371,12 +372,12 @@ function patchUserMessages(): void {
 		const rendered = trimAllBlankEdges(plainMarkdown.render(innerWidth));
 		const prefixed = rendered.map((line) => {
 			const withPrefix = ` ${line}`;
-			return applyBackgroundToFullLine(withPrefix, width, sourceStyle.bgColor);
+			return applyBackgroundToFullLine(withPrefix, width, userBgColor);
 		});
-		const result = ["", ...prefixed];
+		const result = [...prefixed];
 		if (result.length > 0) {
 			result[0] = OSC133_ZONE_START + result[0];
-			result[result.length - 1] = result[result.length - 1] + OSC133_ZONE_END + OSC133_ZONE_FINAL;
+			result[result.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + result[result.length - 1];
 		}
 		return result;
 	};
