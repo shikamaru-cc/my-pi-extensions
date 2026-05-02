@@ -44,7 +44,7 @@ function truncate(text: string, max: number): string {
 function buildTitle(theme: any, label: string, target?: string): string {
 	const bullet = theme.fg("accent", "● ");
 	if (!target) return `${bullet}${theme.fg("toolTitle", label)}`;
-	return `${bullet}${theme.fg("toolTitle", `${label}(`)}${theme.fg("text", target)}${theme.fg("toolTitle", `)`)}`;
+	return `${bullet}${theme.fg("toolTitle", `${label} `)}${theme.fg("text", target)}`;
 }
 
 function buildBlock(firstLine: string, previewLines: string[] = []): string {
@@ -66,12 +66,7 @@ function getNonEmptyLines(text: string): string[] {
 }
 
 function getToolLabel(name: string): string {
-	switch (name) {
-		case "ls":
-			return "Ls";
-		default:
-			return name.charAt(0).toUpperCase() + name.slice(1);
-	}
+	return name;
 }
 
 function getToolTarget(name: string, args: any, cwd: string): string | undefined {
