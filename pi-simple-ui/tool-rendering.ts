@@ -44,7 +44,14 @@ function truncate(text: string, max: number): string {
 function buildTitle(theme: any, label: string, target?: string): string {
 	const bullet = theme.fg("accent", "● ");
 	if (!target) return `${bullet}${theme.fg("toolTitle", label)}`;
-	return `${bullet}${theme.fg("toolTitle", `${label} `)}${theme.fg("text", target)}`;
+	const lines = target.split("\n");
+	if (lines.length === 1) {
+		return `${bullet}${theme.fg("toolTitle", `${label} `)}${theme.fg("text", target)}`;
+	}
+	return [
+		`${bullet}${theme.fg("toolTitle", label)}`,
+		...lines.map((line, index) => theme.fg("text", `${index === 0 ? "  └ " : "    "}${line}`)),
+	].join("\n");
 }
 
 function buildBlock(firstLine: string, previewLines: string[] = []): string {
@@ -71,8 +78,8 @@ function getToolLabel(name: string): string {
 
 function getToolTarget(name: string, args: any, cwd: string): string | undefined {
 	switch (name) {
-		case "bash":
-			return truncate(singleLine(args.command ?? ""), 72);
+			case "bash":
+			return String(args.command ?? "").trim();
 		case "read":
 		case "write":
 		case "edit":
