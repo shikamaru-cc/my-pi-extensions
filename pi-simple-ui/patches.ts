@@ -12,7 +12,7 @@ import {
 	ToolExecutionComponent,
 	type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import { Box, Editor, Markdown, Spacer, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
+import { Box, Editor, Image, Markdown, Spacer, Text, visibleWidth, type Component } from "@mariozechner/pi-tui";
 import { relative } from "node:path";
 
 type AnyToolDefinition = ToolDefinition<any, any>;
@@ -261,6 +261,26 @@ function decorateTool(definition: AnyToolDefinition): AnyToolDefinition {
 	};
 }
 
+function indentImageLine(line: string): string {
+	const moveUpMatch = line.match(/^(\x1b\[\d+A)/);
+	if (!moveUpMatch) return ` ${line}`;
+	return `${moveUpMatch[1]} ${line.slice(moveUpMatch[1].length)}`;
+}
+
+function patchImageIndent(): void {
+	const proto = Image.prototype as Image & {
+		__simpleUiImageIndentPatched?: boolean;
+		render(width: number): string[];
+	};
+	if (proto.__simpleUiImageIndentPatched) return;
+	proto.__simpleUiImageIndentPatched = true;
+
+	const originalRender = proto.render;
+	proto.render = function (width: number): string[] {
+		return originalRender.call(this, Math.max(1, width - 1)).map(indentImageLine);
+	};
+}
+
 function patchToolSpacing(): void {
 	const proto = ToolExecutionComponent.prototype as ToolExecutionComponent & {
 		__compactToolSpacingPatched?: boolean;
@@ -382,5 +402,6 @@ export function applySimpleUiPatches(): void {
 	patchWidgetSpacing();
 	patchEditorPrompt();
 	patchUserMessages();
+	patchImageIndent();
 	patchToolSpacing();
 }
