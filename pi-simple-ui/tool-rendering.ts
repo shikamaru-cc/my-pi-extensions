@@ -94,9 +94,10 @@ function getToolTarget(name: string, args: any, cwd: string): string | undefined
 	}
 }
 
-function formatExpandedPreview(lines: string[], limit: number, theme: any): string[] {
-	const preview = lines.slice(0, limit).map((line) => theme.fg("muted", line));
-	if (lines.length > limit) {
+function formatPreview(lines: string[], limit: number, theme: any, expanded: boolean): string[] {
+	const displayLines = expanded ? lines : lines.slice(0, limit);
+	const preview = displayLines.map((line) => theme.fg("muted", line));
+	if (!expanded && lines.length > limit) {
 		preview.push(theme.fg("dim", `... +${lines.length - limit} lines (ctrl+o to expand)`));
 	}
 	return preview;
@@ -133,7 +134,7 @@ function summarizeToolResult(name: string, args: any, result: any, theme: any, c
 			}
 			return {
 				firstLine,
-				preview: expanded ? formatExpandedPreview(lines, 14, theme) : [],
+				preview: expanded ? formatPreview(lines, 14, theme, true) : [],
 			};
 		}
 
@@ -143,7 +144,7 @@ function summarizeToolResult(name: string, args: any, result: any, theme: any, c
 			let firstLine = exitCode === 0 ? "Command finished" : `Command exited with code ${exitCode}`;
 			if (result.details?.truncation?.truncated) firstLine += " (truncated)";
 			const preview = expanded
-				? formatExpandedPreview(lines, 18, theme)
+				? formatPreview(lines, 18, theme, true)
 				: nonEmptyLines.slice(0, 1).map((line) => theme.fg("muted", truncate(line, 120)));
 			return { firstLine, preview };
 		}
@@ -182,25 +183,25 @@ function summarizeToolResult(name: string, args: any, result: any, theme: any, c
 		case "grep":
 			return {
 				firstLine: `Found ${nonEmptyLines.length} matching lines`,
-				preview: expanded ? formatExpandedPreview(lines, 18, theme) : [],
+				preview: expanded ? formatPreview(lines, 18, theme, true) : [],
 			};
 
 		case "find":
 			return {
 				firstLine: `Found ${nonEmptyLines.length} paths`,
-				preview: expanded ? formatExpandedPreview(lines, 18, theme) : [],
+				preview: expanded ? formatPreview(lines, 18, theme, true) : [],
 			};
 
 		case "ls":
 			return {
 				firstLine: `Listed ${nonEmptyLines.length} entries in ${toDisplayPath(args.path, cwd)}`,
-				preview: expanded ? formatExpandedPreview(lines, 18, theme) : [],
+				preview: expanded ? formatPreview(lines, 18, theme, true) : [],
 			};
 
 		default:
 			return {
 				firstLine: singleLine(text) || "Done",
-				preview: expanded ? formatExpandedPreview(lines, 18, theme) : [],
+				preview: expanded ? formatPreview(lines, 18, theme, true) : [],
 			};
 	}
 }
